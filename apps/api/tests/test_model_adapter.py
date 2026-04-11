@@ -82,6 +82,19 @@ def test_ollama_adapter_calls_local_generate_endpoint(monkeypatch) -> None:
     ]
 
 
+def test_ollama_adapter_defaults_to_loopback_ip_base_url(monkeypatch) -> None:
+    monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
+    monkeypatch.setenv("OLLAMA_MODEL", "qwen2.5-coder:3b")
+
+    http_client = FakeHttpClient()
+    adapter = OllamaModelAdapter(http_client=http_client)
+
+    code = adapter.generate("make a LocalScript", "inventory payload")
+
+    assert code == "print('ok')"
+    assert http_client.calls[0]["url"] == "http://127.0.0.1:11434/api/generate"
+
+
 def test_ollama_adapter_falls_back_to_local_cli_when_http_api_is_unavailable(monkeypatch) -> None:
     monkeypatch.setenv("OLLAMA_BASE_URL", "http://localhost:11434")
     monkeypatch.setenv("OLLAMA_MODEL", "qwen2.5-coder:3b")

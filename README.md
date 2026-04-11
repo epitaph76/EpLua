@@ -2,7 +2,7 @@
 
 Базовый репозиторий проекта локального AI-агента для генерации **LocalScript-совместимого Lua-кода**.
 
-На текущий момент baseline-этап **S-0: репозиторный baseline и конкурсная фиксация** уже завершён. Это значит, что здесь зафиксированы рамки проекта, ограничения конкурса, MVP-границы и стартовая структура, но **кодовая реализация backend / validator / UI ещё не начата**.
+На текущий момент в репозитории уже закрыты этапы `S-0`, `S-1`, `S-3`, `S-4`, `S-5`, `S-6`; этап `S-2` остаётся `deferred`. В проекте уже есть локальный backend, domain adapter, validator / critic / repair loop и debug trail для проверки качества generation path.
 
 ## Что строится
 
@@ -20,26 +20,24 @@
 
 ## Текущее состояние
 
-Сейчас в репозитории сделан именно baseline-слой:
+Сейчас в репозитории уже собран рабочий локальный MVP-контур:
 
-- зафиксированы проектные ограничения;
-- оформлен статусный документ проекта;
-- определён MVP и его definition of done;
-- создан стартовый каркас каталогов;
-- добавлен baseline для будущей Docker-first поставки;
-- подготовлен `.env.example` с базовыми runtime-параметрами.
+- локальный API поднимает `/health` и `/generate`;
+- generation идёт только через локальный `Ollama`;
+- domain adapter принуждает ответ к LocalScript-aware output modes;
+- quality layer выполняет format checks, path checks, forbidden-pattern checks и archetype-specific checks;
+- `critic` переводит validator findings в repair / clarification / finalize решения;
+- repair loop ограничен и поддерживает deterministic fixes для части типовых format / wrapper / almost-JSON ошибок;
+- debug mode возвращает prompt package, raw model calls, validation passes и critic reports.
 
 Что **ещё не реализовано**:
 
-- backend API;
-- model adapter;
-- validator / critic / repair loop;
 - retrieval;
 - benchmark harness;
 - UI;
-- рабочий `docker-compose.yml`.
+- рабочий `docker-compose.yml` для полноценного Docker-first runtime.
 
-Иными словами: репозиторий уже можно показывать как инженерную основу решения, но запускать готовую систему пока нельзя.
+Иными словами: локальный backend и quality contour уже работают, но проект ещё не доведён до финального конкурсного уровня по retrieval, evaluation, Docker-first поставке и сдачным артефактам.
 
 ## Жёсткие ограничения проекта
 
@@ -79,7 +77,7 @@
 6. `Critic & Repair Layer` — ограниченно исправляет ошибочные ответы.
 7. `Output Layer` — возвращает финальный ответ и trace шагов.
 
-Эта архитектура описывает **направление проекта**, а не текущее состояние реализации.
+Эта архитектура уже частично реализована в backend: `Model Invocation Layer`, `Domain Adapter Layer`, `Validation Layer`, `Critic & Repair Layer` и `Output Layer` присутствуют в рабочем контуре.
 
 ## Стартовая структура репозитория
 
@@ -124,9 +122,9 @@
 - [OSP.md](OSP.md) — исходные опорные материалы по выбору модели и архитектурной линии.
 - [AGENTS.md](AGENTS.md) — правила узкой stage-driven работы по репозиторию.
 
-## Runtime baseline
+## Runtime
 
-На этапе `S-0` фиксируются только базовые параметры будущего runtime:
+Текущий локальный runtime:
 
 - текущий базовый кандидат модели: `qwen2.5-coder:3b`;
 - `num_ctx=4096`;
@@ -135,22 +133,57 @@
 - `parallel=1`;
 - GPU budget: `<= 8 GB VRAM`.
 
-Важно: это **не финальный модельный выбор**. Финальная фиксация модели должна быть сделана на этапе `S-2`.
+Важно: это всё ещё **не финальный модельный выбор**. Финальная фиксация модели должна быть сделана на этапе `S-2`, после bake-off внутри уже собранного agent pipeline.
 
-## Docker и запуск
+## Локальный запуск
 
-Полноценный запуск системы будет оформляться на этапе `S-10`.
+Запуск `Ollama`:
 
-Сейчас в репозитории есть только baseline-заготовка в [docker/README.md](docker/README.md), которая фиксирует требования к будущей Docker-first поставке. Рабочего `docker-compose.yml` и runnable backend на этапе `S-0` ещё нет.
+```powershell
+ollama serve
+```
+
+Запуск API:
+
+```powershell
+cd apps/api
+$env:PYTHONPATH='.'
+$env:OLLAMA_BASE_URL='http://127.0.0.1:11434'
+python -m uvicorn main:app --host 127.0.0.1 --port 8011
+```
+
+Пример запроса в debug mode:
+
+```powershell
+$body=@{task_text='Из полученного списка email получи последний.';provided_context='{"wf":{"vars":{"emails":["user1@example.com","user2@example.com"]}}}';archetype='simple_extraction';output_mode='raw_lua';input_roots=@('wf.vars.emails');risk_tags=@('array_indexing','empty_array');debug=$true}|ConvertTo-Json -Depth 10 -Compress
+Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:8011/generate' -ContentType 'application/json; charset=utf-8' -Body $body | ConvertTo-Json -Depth 20
+```
+
+В debug-ответе возвращаются:
+
+- `trace`
+- `validator_report`
+- `critic_report`
+- `repair_count`
+- `clarification_count`
+- `debug.prompt_package`
+- `debug.model_calls`
+- `debug.validation_passes`
+
+## Docker и воспроизводимость
+
+Полноценная Docker-first поставка всё ещё относится к этапу `S-10`.
+
+Сейчас в репозитории есть [docker/README.md](docker/README.md), но рабочего `docker-compose.yml` для финального локального рантайма ещё нет.
 
 ## Что дальше
 
 Ближайшие этапы roadmap:
 
-1. `S-1` — декомпозиция домена LocalScript и benchmark layer.
-2. `S-2` — отбор финальной модели под лимит `8 GB VRAM`.
-3. `S-3` — выделение минимального агентного контура.
-4. `S-4` — core generation service и API-контракт.
+1. `S-7` — локальная база знаний, шаблоны и retrieval.
+2. `S-8` — UI как дополнительный demo-friendly слой.
+3. `S-9` — evaluation harness и regression runner.
+4. `S-10` — Docker-first runtime, безопасность и воспроизводимость.
 
 ## Главный принцип
 

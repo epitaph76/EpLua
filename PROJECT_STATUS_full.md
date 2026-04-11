@@ -220,8 +220,8 @@
 | S-2  | Финальный отбор модели под 8 GB VRAM                         | `deferred`    | Финальный bake-off модели перенесён после agent contour и validator / repair loop     |
 | S-3  | Выделение агентного контура из Qwen Code и Claw Code         | `done`        | Описаны минимальная agent architecture, state machine, skill decomposition и bounded pipeline sequence |
 | S-4  | Core generation service и API-контракт                       | `done`        | Поднят локальный backend с `/health`, `/generate`, OpenAPI, нормализованными ошибками и local-only model path |
-| S-5  | Domain adapter для LocalScript-формата                       | `planned`     | Должен появиться слой, принуждающий ответ к LocalScript-правилам                      |
-| S-6  | Validator, critic и repair loop                              | `planned`     | Должен появиться управляемый контур проверки и исправления                            |
+| S-5  | Domain adapter для LocalScript-формата                       | `done`        | Должен появиться слой, принуждающий ответ к LocalScript-правилам                      |
+| S-6  | Validator, critic и repair loop                              | `done`        | Управляемый контур проверки, critic-driven repair и bounded loop реализованы          |
 | S-7  | Локальная база знаний, шаблоны и retrieval                   | `planned`     | Должен появиться локальный слой примеров, archetypes и retrieval                      |
 | S-8  | UI как дополнительный необязательный этап                    | `planned`     | Должен появиться demo-friendly и debug-friendly интерфейс                             |
 | S-9  | Evaluation harness и регрессионный набор                     | `planned`     | Должны появиться метрики, benchmark runner и regression suite                         |
@@ -842,7 +842,7 @@ classification → context check → mode selection → archetype selection → 
 
 ## S-5. Domain adapter для LocalScript-формата
 
-**Статус:** `planned`
+**Статус:** `done`
 
 ### Цель
 
@@ -962,7 +962,7 @@ classification → context check → mode selection → archetype selection → 
 
 ## S-6. Validator, critic и repair loop
 
-**Статус:** `planned`
+**Статус:** `done`
 
 ### Цель
 
@@ -1075,6 +1075,16 @@ classification → context check → mode selection → archetype selection → 
 * ловить доменные ошибки;
 * автоматически исправлять часть ответов;
 * останавливаться, если исправление нецелесообразно.
+
+### Что реализовано по факту
+
+* добавлены tool-driven validators для `raw_lua`, `json_wrapper`, `patch_mode` и `clarification`;
+* validator reports возвращаются как структурированные данные, а не свободный текст;
+* `critic` переводит finding в конкретную repair-задачу или clarification/finalize решение;
+* repair loop ограничен и соблюдает budget (`repair_count <= 2`, `clarification_count <= 1`);
+* для `raw_lua`, `json_wrapper` и `patch_mode` добавлены deterministic repair path для типовых format / wrapper / almost-JSON сбоев;
+* debug mode возвращает audit trail: prompt package, raw model calls, validation passes и critic reports;
+* полезный repair и clarification path подтверждены тестами и ручными live smoke-прогонами.
 
 ### UX результата
 

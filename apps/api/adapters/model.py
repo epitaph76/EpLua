@@ -28,7 +28,7 @@ class OllamaModelAdapter:
         base_url: str | None = None,
         model: str | None = None,
     ) -> None:
-        self._base_url = (base_url or os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")).rstrip("/")
+        self._base_url = (base_url or os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")).rstrip("/")
         self._model = model or os.getenv("OLLAMA_MODEL", "qwen2.5-coder:3b")
         self._http_client = http_client or httpx.Client()
         self._ensure_local_base_url()
@@ -52,6 +52,19 @@ class OllamaModelAdapter:
             risk_tags=risk_tags,
         )
 
+        response_text = self.generate_from_prompt(prompt)
+        try:
+            if effective_output_mode:
+                return normalize_model_output(response_text, effective_output_mode)
+            return response_text
+        except ValueError as exc:
+            raise ApiError(
+                status_code=422,
+                code="domain_contract_error",
+                message=str(exc),
+            ) from exc
+
+    def generate_from_prompt(self, prompt: str) -> str:
         try:
             response = self._http_client.post(
                 f"{self._base_url}/api/generate",
@@ -64,10 +77,7 @@ class OllamaModelAdapter:
             )
             response.raise_for_status()
             payload = response.json()
-            response_text = str(payload["response"])
-            if effective_output_mode:
-                return normalize_model_output(response_text, effective_output_mode)
-            return response_text
+            return str(payload["response"])
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 503:
                 return self._generate_via_cli(prompt)
@@ -87,12 +97,6 @@ class OllamaModelAdapter:
                 status_code=502,
                 code="model_error",
                 message="Local model response was invalid.",
-            ) from exc
-        except ValueError as exc:
-            raise ApiError(
-                status_code=422,
-                code="domain_contract_error",
-                message=str(exc),
             ) from exc
 
     def _build_prompt(

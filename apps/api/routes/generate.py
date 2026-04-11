@@ -17,16 +17,22 @@ def generate(
     request: GenerateRequest,
     generation_service: GenerationService = Depends(get_generation_service),
 ) -> GenerateResponse:
-    log_event("generate_requested", path="/generate")
+    log_event("generate_requested", path="/generate", debug=request.debug)
     response = GenerateResponse.model_validate(
         generation_service.generate(
             task_text=request.task_text,
             provided_context=request.provided_context,
+            archetype=request.archetype,
+            output_mode=request.output_mode,
+            input_roots=request.input_roots,
+            risk_tags=request.risk_tags,
+            debug=request.debug,
         )
     )
     log_event(
         "generate_completed",
         path="/generate",
         validation_status=response.validation_status,
+        debug=request.debug,
     )
     return response

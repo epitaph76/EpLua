@@ -26,8 +26,8 @@
 | S-2 | Финальный отбор модели под 8 GB VRAM | `deferred` | Финальный bake-off перенесён после agent contour и validator / repair loop; до этого используется provisional `qwen2.5-coder:3b` |
 | S-3 | Выделение агентного контура из Qwen Code и Claw Code | `done` | Зафиксированы agent architecture, state machine, pipeline sequence и skill decomposition |
 | S-4 | Core generation service и API-контракт | `done` | Рабочий локальный backend с `/health`, `/generate`, OpenAPI и локальным model path |
-| S-5 | Domain adapter для LocalScript-формата | `planned` | Принуждение ответа к LocalScript-правилам |
-| S-6 | Validator, critic и repair loop | `planned` | Управляемый контур проверки и исправления |
+| S-5 | Domain adapter для LocalScript-формата | `done` | Принуждение ответа к LocalScript-правилам |
+| S-6 | Validator, critic и repair loop | `done` | Управляемый контур проверки, critic-driven repair и bounded loop |
 | S-7 | Локальная база знаний, шаблоны и retrieval | `planned` | Локальный слой примеров, archetypes и retrieval |
 | S-8 | UI как дополнительный необязательный этап | `planned` | Demo-friendly интерфейс без подмены ядра |
 | S-9 | Evaluation harness и регрессионный набор | `planned` | Метрики, benchmark runner и regression suite |
@@ -48,12 +48,10 @@
 ## Что ещё не сделано
 
 - не выбран финальный model tag внутри реального agent pipeline;
-- не реализован domain adapter под LocalScript-правила;
-- не реализован validator / repair loop;
 - не построен evaluation harness;
 - не оформлен Docker-first runtime;
 - не подготовлены конкурсные финальные артефакты.
 
 ## Следующий фокус
 
-Следующий рабочий этап: `S-5` — domain adapter для LocalScript-формата, который привяжет generation к canonical archetypes, output modes и domain guardrails из `docs/*`.
+Следующий рабочий этап: `S-7` — локальная база знаний, шаблоны и retrieval, чтобы снизить нагрузку на модель и сделать generation стабильнее за счёт локальных примеров и структурированного контекста.

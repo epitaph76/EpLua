@@ -85,6 +85,61 @@
               }
             ],
             "title": "Provided Context"
+          },
+          "archetype": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Archetype"
+          },
+          "output_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Mode"
+          },
+          "input_roots": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Roots"
+          },
+          "risk_tags": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Risk Tags"
+          },
+          "debug": {
+            "type": "boolean",
+            "title": "Debug",
+            "default": false
           }
         },
         "type": "object",
@@ -109,6 +164,74 @@
             },
             "type": "array",
             "title": "Trace"
+          },
+          "validator_report": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Validator Report"
+          },
+          "critic_report": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Critic Report"
+          },
+          "repair_count": {
+            "type": "integer",
+            "title": "Repair Count",
+            "default": 0
+          },
+          "clarification_count": {
+            "type": "integer",
+            "title": "Clarification Count",
+            "default": 0
+          },
+          "output_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Mode"
+          },
+          "archetype": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Archetype"
+          },
+          "debug": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Debug"
           }
         },
         "type": "object",
