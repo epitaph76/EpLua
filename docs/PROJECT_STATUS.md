@@ -7,20 +7,25 @@
 ## Текущее состояние
 
 - текущий этап baseline закрыт: `S-0 = done`;
+- доменная декомпозиция и baseline benchmark layer собраны: `S-1 = done`;
+- минимальный agent contour собран документарно: `S-3 = done`;
+- локальный backend уже работает: `S-4 = done`;
 - репозиторий зафиксирован как локальный LocalScript-агент, а не универсальный AI-ассистент;
 - конкурсные ограничения и MVP-границы вынесены в отдельные документы;
 - создана стартовая структура каталогов для последующих этапов;
-- кодовая реализация backend и runtime ещё не начата.
+- для разработки agent contour временно заморожен provisional model tag: `qwen2.5-coder:3b`;
+- финальный model bake-off перенесён на этап после появления agent contour и validation / repair loop;
+- backend поднимает `/health` и `/generate`, отдаёт OpenAPI и вызывает только локальный runtime через `Ollama`.
 
 ## Карта этапов
 
 | ID | Этап | Статус | Краткий результат |
 | --- | --- | --- | --- |
 | S-0 | Репозиторный baseline и конкурсная фиксация | `done` | Зафиксированы рамки проекта, ограничения, MVP и стартовая структура |
-| S-1 | Декомпозиция домена LocalScript и benchmark layer | `planned` | Формальная карта домена и baseline regression pack |
-| S-2 | Отбор модели под 8 GB VRAM | `planned` | Выбран финальный Ollama tag на основе benchmark и VRAM budget |
-| S-3 | Выделение агентного контура из Qwen Code и Claw Code | `planned` | Описана минимальная state-machine агентность |
-| S-4 | Core generation service и API-контракт | `planned` | Рабочий локальный backend для генерации Lua-кода |
+| S-1 | Декомпозиция домена LocalScript и benchmark layer | `done` | Собраны формальная карта домена, archetypes задач и baseline regression pack |
+| S-2 | Финальный отбор модели под 8 GB VRAM | `deferred` | Финальный bake-off перенесён после agent contour и validator / repair loop; до этого используется provisional `qwen2.5-coder:3b` |
+| S-3 | Выделение агентного контура из Qwen Code и Claw Code | `done` | Зафиксированы agent architecture, state machine, pipeline sequence и skill decomposition |
+| S-4 | Core generation service и API-контракт | `done` | Рабочий локальный backend с `/health`, `/generate`, OpenAPI и локальным model path |
 | S-5 | Domain adapter для LocalScript-формата | `planned` | Принуждение ответа к LocalScript-правилам |
 | S-6 | Validator, critic и repair loop | `planned` | Управляемый контур проверки и исправления |
 | S-7 | Локальная база знаний, шаблоны и retrieval | `planned` | Локальный слой примеров, archetypes и retrieval |
@@ -42,8 +47,8 @@
 
 ## Что ещё не сделано
 
-- не выбран финальный model tag;
-- не реализован backend;
+- не выбран финальный model tag внутри реального agent pipeline;
+- не реализован domain adapter под LocalScript-правила;
 - не реализован validator / repair loop;
 - не построен evaluation harness;
 - не оформлен Docker-first runtime;
@@ -51,4 +56,4 @@
 
 ## Следующий фокус
 
-Следующий обязательный этап: `S-1` — формализация домена LocalScript, archetypes задач и baseline benchmark layer.
+Следующий рабочий этап: `S-5` — domain adapter для LocalScript-формата, который привяжет generation к canonical archetypes, output modes и domain guardrails из `docs/*`.

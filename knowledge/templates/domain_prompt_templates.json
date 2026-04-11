@@ -1,0 +1,65 @@
+{
+  "common_rules": [
+    "Use direct wf.* access instead of JsonPath or invented access layers.",
+    "Generate LocalScript-compatible Lua 5.5 only.",
+    "Do not mix wf.vars.* and wf.initVariables.* unless input_roots explicitly require both.",
+    "Handle nil, empty strings, empty arrays, and array semantics carefully."
+  ],
+  "output_modes": {
+    "raw_lua": {
+      "expected_result_format": "Return only Lua code.",
+      "rules": [
+        "Return only Lua code.",
+        "Do not include prose, markdown fences, JSON, or service text.",
+        "Keep the answer to the minimal Lua fragment that solves the task."
+      ]
+    },
+    "json_wrapper": {
+      "expected_result_format": "Return a valid JSON object where code values use lua{...}lua.",
+      "rules": [
+        "Return a valid JSON object.",
+        "Every string value that contains generated code must use the lua{...}lua wrapper.",
+        "Do not add prose, markdown fences, or transport-level envelopes."
+      ]
+    },
+    "patch_mode": {
+      "expected_result_format": "Return only an additive JSON payload with lua{...}lua code values.",
+      "rules": [
+        "Return only the fields that need to be added or changed.",
+        "Do not rewrite the full payload when a local additive patch is enough.",
+        "Wrap generated code values with lua{...}lua."
+      ]
+    },
+    "clarification": {
+      "expected_result_format": "Return one focused clarification question instead of code.",
+      "rules": [
+        "Do not generate code when the data basis is ambiguous.",
+        "Ask one short clarification question that resolves the ambiguity.",
+        "Do not include JSON or markdown."
+      ]
+    }
+  },
+  "forbidden_patterns": [
+    "Do not use JsonPath.",
+    "Do not invent data roots outside wf.vars.* and wf.initVariables.*.",
+    "Do not mix wf.vars.* and wf.initVariables.* in one answer without explicit input basis.",
+    "Do not return prose or markdown outside clarification mode.",
+    "Do not rewrite the full payload in patch_mode."
+  ],
+  "risk_hints": {
+    "array_indexing": "Use Lua array indexing carefully and handle empty arrays safely.",
+    "empty_array": "Account for empty arrays before reading the last or first item.",
+    "numeric_transform": "Preserve numeric intent and avoid converting working values to strings.",
+    "table_mutation": "Mutate only the required fields and keep unrelated table content intact.",
+    "nil_handling": "Guard nil values and empty strings before operating on them.",
+    "datetime_format": "Validate date and time substrings before composing the result.",
+    "substring_bounds": "Protect substring operations from short or malformed inputs.",
+    "array_semantics": "Preserve array semantics and mark arrays when the domain requires it.",
+    "type_normalization": "Normalize singleton tables into arrays only when required by the task.",
+    "empty_value_filtering": "Treat empty strings and nil as distinct invalid values during filtering.",
+    "patch_payload": "Return only additive payload fields and keep the patch local.",
+    "no_full_rewrite": "Avoid full payload rewrites when patch_mode is requested.",
+    "init_variables": "Use wf.initVariables.* only when the task input explicitly comes from initVariables.",
+    "timezone_offset": "Respect timezone offset parsing when converting ISO timestamps."
+  }
+}

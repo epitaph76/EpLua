@@ -1,0 +1,90 @@
+{
+  "pack_id": "localscript-initial-regression-pack-s1",
+  "dataset_id": "localscript-public-cases-s1",
+  "version": "1.0.0",
+  "cases": [
+    {
+      "case_id": "case-01-last-array-item",
+      "primary_mode": "raw_lua",
+      "priority": "high",
+      "risk_tags": [
+        "array_indexing",
+        "empty_array"
+      ],
+      "why_in_pack": "Базовая проверка прямого доступа к массиву и корректного возврата последнего элемента."
+    },
+    {
+      "case_id": "case-02-try-counter",
+      "primary_mode": "raw_lua",
+      "priority": "medium",
+      "risk_tags": [
+        "numeric_transform",
+        "wrong_root"
+      ],
+      "why_in_pack": "Покрывает простую арифметическую трансформацию без потери доменного root path."
+    },
+    {
+      "case_id": "case-03-restbody-cleanup",
+      "primary_mode": "raw_lua",
+      "priority": "high",
+      "risk_tags": [
+        "table_mutation",
+        "field_whitelist",
+        "nil_handling"
+      ],
+      "why_in_pack": "Проверяет selective field cleanup и работу с вложенным REST-результатом."
+    },
+    {
+      "case_id": "case-04-iso8601-format",
+      "primary_mode": "raw_lua",
+      "priority": "high",
+      "risk_tags": [
+        "datetime_format",
+        "substring_bounds"
+      ],
+      "why_in_pack": "Нужен как baseline для конвертации даты/времени из раздельных полей `DATUM` и `TIME`."
+    },
+    {
+      "case_id": "case-05-items-as-arrays",
+      "primary_mode": "raw_lua",
+      "priority": "medium",
+      "risk_tags": [
+        "array_semantics",
+        "type_normalization"
+      ],
+      "why_in_pack": "Проверяет, что нормализация не ломает структуру массивов и одиночных объектов."
+    },
+    {
+      "case_id": "case-06-filter-discount-markdown",
+      "primary_mode": "raw_lua",
+      "priority": "high",
+      "risk_tags": [
+        "array_allocation",
+        "empty_value_filtering",
+        "nil_handling"
+      ],
+      "why_in_pack": "Покрывает фильтрацию с `_utils.array.new()` и обработку пустых значений."
+    },
+    {
+      "case_id": "case-07-add-squared-variable",
+      "primary_mode": "patch_mode",
+      "priority": "high",
+      "risk_tags": [
+        "patch_payload",
+        "no_full_rewrite"
+      ],
+      "why_in_pack": "Фиксирует, что patch response возвращает только additive payload, а не полный rewrite."
+    },
+    {
+      "case_id": "case-08-unix-time-conversion",
+      "primary_mode": "raw_lua",
+      "priority": "high",
+      "risk_tags": [
+        "datetime_conversion",
+        "init_variables",
+        "timezone_offset"
+      ],
+      "why_in_pack": "Покрывает отдельный data root `wf.initVariables.*` и конвертацию ISO 8601 в unix time."
+    }
+  ]
+}

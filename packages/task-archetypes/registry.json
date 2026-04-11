@@ -1,0 +1,27 @@
+{
+  "simple_extraction": {
+    "description": "Read and return a value from a known LocalScript data path.",
+    "allowed_output_modes": ["raw_lua", "json_wrapper"],
+    "template_pack": "localscript_core"
+  },
+  "filtering": {
+    "description": "Filter arrays or tables while preserving LocalScript array semantics.",
+    "allowed_output_modes": ["raw_lua", "json_wrapper"],
+    "template_pack": "localscript_core"
+  },
+  "transformation": {
+    "description": "Compute or mutate a value locally without rewriting unrelated payload fields.",
+    "allowed_output_modes": ["raw_lua", "json_wrapper", "patch_mode"],
+    "template_pack": "localscript_core"
+  },
+  "normalization": {
+    "description": "Normalize input structures into the expected LocalScript shape.",
+    "allowed_output_modes": ["raw_lua", "json_wrapper"],
+    "template_pack": "localscript_core"
+  },
+  "datetime_conversion": {
+    "description": "Convert date and time fields with format guards and LocalScript-safe Lua logic.",
+    "allowed_output_modes": ["raw_lua", "json_wrapper"],
+    "template_pack": "localscript_core"
+  }
+}

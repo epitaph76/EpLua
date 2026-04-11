@@ -1,0 +1,413 @@
+{
+  "dataset_id": "localscript-public-cases-s1",
+  "version": "1.0.0",
+  "source_refs": [
+    {
+      "id": "public_selection_pdf",
+      "type": "pdf",
+      "location": "C:\\Users\\epitaph\\Downloads\\Публичная выборка LocalScript.pdf",
+      "sections": [
+        "1",
+        "1.1",
+        "1.2",
+        "2.1",
+        "2.2",
+        "2.3",
+        "2.4",
+        "2.5",
+        "2.6",
+        "2.7",
+        "2.8"
+      ],
+      "notes": "Primary source for LocalScript domain rules and the eight public benchmark cases."
+    },
+    {
+      "id": "localscript_openapi_baseline",
+      "type": "openapi",
+      "location": "C:\\Users\\epitaph\\Downloads\\localscript-openapi.zip::localscript-openapi.yaml",
+      "sections": [
+        "paths./generate"
+      ],
+      "notes": "Transport-level API baseline. The HTTP envelope does not redefine domain output modes."
+    }
+  ],
+  "cases": [
+    {
+      "id": "case-01-last-array-item",
+      "title": "Последний элемент массива",
+      "prompt": "Из полученного списка email получи последний.",
+      "context": {
+        "wf": {
+          "vars": {
+            "emails": [
+              "user1@example.com",
+              "user2@example.com",
+              "user3@example.com"
+            ]
+          }
+        }
+      },
+      "archetype": "simple_extraction",
+      "allowed_output_modes": [
+        "raw_lua",
+        "json_wrapper"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "return wf.vars.emails[#wf.vars.emails]",
+        "json_wrapper": {
+          "lastEmail": "lua{return wf.vars.emails[#wf.vars.emails]}lua"
+        }
+      },
+      "input_roots": [
+        "wf.vars.emails"
+      ],
+      "risk_tags": [
+        "array_indexing",
+        "empty_array",
+        "json_wrapper"
+      ],
+      "source_ref": "public_selection_pdf:2.1"
+    },
+    {
+      "id": "case-02-try-counter",
+      "title": "Счётчик попыток",
+      "prompt": "Увеличивай значение переменной try_count_n на каждой итерации.",
+      "context": {
+        "wf": {
+          "vars": {
+            "try_count_n": 3
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua",
+        "json_wrapper"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "return wf.vars.try_count_n + 1",
+        "json_wrapper": {
+          "try_count_n": "lua{return wf.vars.try_count_n + 1}lua"
+        }
+      },
+      "input_roots": [
+        "wf.vars.try_count_n"
+      ],
+      "risk_tags": [
+        "numeric_transform",
+        "wrong_root",
+        "json_wrapper"
+      ],
+      "source_ref": "public_selection_pdf:2.2"
+    },
+    {
+      "id": "case-03-restbody-cleanup",
+      "title": "Очистка значений в переменных",
+      "prompt": "Для полученных данных из предыдущего REST запроса очисти значения переменных ID, ENTITY_ID, CALL.",
+      "context": {
+        "wf": {
+          "vars": {
+            "RESTbody": {
+              "result": [
+                {
+                  "ID": 123,
+                  "ENTITY_ID": 456,
+                  "CALL": "example_call_1",
+                  "OTHER_KEY_1": "value1",
+                  "OTHER_KEY_2": "value2"
+                },
+                {
+                  "ID": 789,
+                  "ENTITY_ID": 101,
+                  "CALL": "example_call_2",
+                  "EXTRA_KEY_1": "value3",
+                  "EXTRA_KEY_2": "value4"
+                }
+              ]
+            }
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua",
+        "json_wrapper"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "result = wf.vars.RESTbody.result\nfor _, filteredEntry in pairs(result) do\n  for key, value in pairs(filteredEntry) do\n    if key ~= \"ID\" and key ~= \"ENTITY_ID\" and key ~= \"CALL\" then\n      filteredEntry[key] = nil\n    end\n  end\nend\n\nreturn result",
+        "json_wrapper": {
+          "result": "lua{\nresult = wf.vars.RESTbody.result\nfor _, filteredEntry in pairs(result) do\n  for key, value in pairs(filteredEntry) do\n    if key ~= \"ID\" and key ~= \"ENTITY_ID\" and key ~= \"CALL\" then\n      filteredEntry[key] = nil\n    end\n  end\nend\n\nreturn result\n}lua"
+        }
+      },
+      "input_roots": [
+        "wf.vars.RESTbody.result"
+      ],
+      "risk_tags": [
+        "table_mutation",
+        "field_whitelist",
+        "nil_handling",
+        "json_wrapper"
+      ],
+      "source_ref": "public_selection_pdf:2.3"
+    },
+    {
+      "id": "case-04-iso8601-format",
+      "title": "Приведение времени к стандарту ISO 8601",
+      "prompt": "Преобразуй время из формата 'YYYYMMDD' и 'HHMMSS' в строку в формате ISO 8601 с использованием Lua. Пример в",
+      "context": {
+        "wf": {
+          "vars": {
+            "json": {
+              "IDOC": {
+                "ZCDF_HEAD": {
+                  "DELIVERY": "123456789",
+                  "SUBJECT": "Order Confirmation",
+                  "DATUM": "20231015",
+                  "TIME": "153000",
+                  "STATUS": "Confirmed",
+                  "ROUTE": "Route 66",
+                  "ROUTE_TXT": "Main Distribution Route",
+                  "ZCDF_PACKAGES": [
+                    {
+                      "id": "PKG001",
+                      "number": "EXIDV001",
+                      "weight": "10",
+                      "volume": "50",
+                      "length": "100",
+                      "width": "50",
+                      "height": "30",
+                      "items": [
+                        {
+                          "sku": "SKU001",
+                          "externalId": "MAT001",
+                          "quantity": "5",
+                          "weight": "2"
+                        },
+                        {
+                          "sku": "SKU002",
+                          "externalId": "MAT002",
+                          "quantity": "3",
+                          "weight": "1"
+                        }
+                      ]
+                    },
+                    {
+                      "id": "PKG002",
+                      "number": "EXIDV002",
+                      "weight": "20",
+                      "volume": "60",
+                      "length": "120",
+                      "width": "60",
+                      "height": "40",
+                      "items": [
+                        {
+                          "sku": "SKU003",
+                          "externalId": "MAT003",
+                          "quantity": "10",
+                          "weight": "2"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "archetype": "datetime_conversion",
+      "allowed_output_modes": [
+        "raw_lua",
+        "json_wrapper"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "DATUM = wf.vars.json.IDOC.ZCDF_HEAD.DATUM\nTIME = wf.vars.json.IDOC.ZCDF_HEAD.TIME\n\nlocal function safe_sub(str, start, finish)\n  local s = string.sub(str, start, math.min(finish, #str))\n  return s ~= \"\" and s or \"00\"\nend\n\nyear = safe_sub(DATUM, 1, 4)\nmonth = safe_sub(DATUM, 5, 6)\nday = safe_sub(DATUM, 7, 8)\nhour = safe_sub(TIME, 1, 2)\nminute = safe_sub(TIME, 3, 4)\nsecond = safe_sub(TIME, 5, 6)\n\niso_date = string.format(\n  '%s-%s-%sT%s:%s:%s.000000Z',\n  year, month, day,\n  hour, minute, second\n)\n\nreturn iso_date",
+        "json_wrapper": {
+          "time": "lua{\nDATUM = wf.vars.json.IDOC.ZCDF_HEAD.DATUM\nTIME = wf.vars.json.IDOC.ZCDF_HEAD.TIME\n\nlocal function safe_sub(str, start, finish)\n  local s = string.sub(str, start, math.min(finish, #str))\n  return s ~= \"\" and s or \"00\"\nend\n\nyear = safe_sub(DATUM, 1, 4)\nmonth = safe_sub(DATUM, 5, 6)\nday = safe_sub(DATUM, 7, 8)\nhour = safe_sub(TIME, 1, 2)\nminute = safe_sub(TIME, 3, 4)\nsecond = safe_sub(TIME, 5, 6)\n\niso_date = string.format(\n  '%s-%s-%sT%s:%s:%s.000000Z',\n  year, month, day,\n  hour, minute, second\n)\n\nreturn iso_date\n}lua"
+        }
+      },
+      "input_roots": [
+        "wf.vars.json.IDOC.ZCDF_HEAD.DATUM",
+        "wf.vars.json.IDOC.ZCDF_HEAD.TIME"
+      ],
+      "risk_tags": [
+        "datetime_format",
+        "substring_bounds",
+        "json_wrapper"
+      ],
+      "source_ref": "public_selection_pdf:2.4"
+    },
+    {
+      "id": "case-05-items-as-arrays",
+      "title": "Проверка типа данных",
+      "prompt": "Как преобразовать структуру данных так, чтобы все элементы items в ZCDF_PACKAGES всегда были представлены в виде массивов, даже если они изначально не являются массивами.",
+      "context": {
+        "wf": {
+          "vars": {
+            "json": {
+              "IDOC": {
+                "ZCDF_HEAD": {
+                  "ZCDF_PACKAGES": [
+                    {
+                      "items": [
+                        {
+                          "sku": "A"
+                        },
+                        {
+                          "sku": "B"
+                        }
+                      ]
+                    },
+                    {
+                      "items": {
+                        "sku": "C"
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "archetype": "normalization",
+      "allowed_output_modes": [
+        "raw_lua",
+        "json_wrapper"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "function ensureArray(t)\n  if type(t) ~= \"table\" then\n    return {t}\n  end\n  local isArray = true\n  for k, v in pairs(t) do\n    if type(k) ~= \"number\" or math.floor(k) ~= k then\n      isArray = false\n      break\n    end\n  end\n  return isArray and t or {t}\nend\n\nfunction ensureAllItemsAreArrays(objectsArray)\n  if type(objectsArray) ~= \"table\" then\n    return objectsArray\n  end\n  for _, obj in ipairs(objectsArray) do\n    if type(obj) == \"table\" and obj.items then\n      obj.items = ensureArray(obj.items)\n    end\n  end\n  return objectsArray\nend\n\nreturn ensureAllItemsAreArrays(wf.vars.json.IDOC.ZCDF_HEAD.ZCDF_PACKAGES)",
+        "json_wrapper": {
+          "packages": "lua{\nfunction ensureArray(t)\n  if type(t) ~= \"table\" then\n    return {t}\n  end\n  local isArray = true\n  for k, v in pairs(t) do\n    if type(k) ~= \"number\" or math.floor(k) ~= k then\n      isArray = false\n      break\n    end\n  end\n  return isArray and t or {t}\nend\n\nfunction ensureAllItemsAreArrays(objectsArray)\n  if type(objectsArray) ~= \"table\" then\n    return objectsArray\n  end\n  for _, obj in ipairs(objectsArray) do\n    if type(obj) == \"table\" and obj.items then\n      obj.items = ensureArray(obj.items)\n    end\n  end\n  return objectsArray\nend\n\nreturn ensureAllItemsAreArrays(wf.vars.json.IDOC.ZCDF_HEAD.ZCDF_PACKAGES)\n}lua"
+        }
+      },
+      "input_roots": [
+        "wf.vars.json.IDOC.ZCDF_HEAD.ZCDF_PACKAGES"
+      ],
+      "risk_tags": [
+        "array_semantics",
+        "type_normalization",
+        "json_wrapper"
+      ],
+      "source_ref": "public_selection_pdf:2.5"
+    },
+    {
+      "id": "case-06-filter-discount-markdown",
+      "title": "Фильтрация элементов массива 1",
+      "prompt": "Отфильтруй элементы из массива, чтобы включить только те, у которых есть значения в полях Discount или Markdown.",
+      "context": {
+        "wf": {
+          "vars": {
+            "parsedCsv": [
+              {
+                "SKU": "A001",
+                "Discount": "10%",
+                "Markdown": ""
+              },
+              {
+                "SKU": "A002",
+                "Discount": "",
+                "Markdown": "5%"
+              },
+              {
+                "SKU": "A003",
+                "Discount": null,
+                "Markdown": null
+              },
+              {
+                "SKU": "A004",
+                "Discount": "",
+                "Markdown": ""
+              }
+            ]
+          }
+        }
+      },
+      "archetype": "filtering",
+      "allowed_output_modes": [
+        "raw_lua",
+        "json_wrapper"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local result = _utils.array.new()\nlocal items = wf.vars.parsedCsv\n\nfor _, item in ipairs(items) do\n  if (item.Discount ~= \"\" and item.Discount ~= nil) or (item.Markdown ~= \"\" and item.Markdown ~= nil) then\n    table.insert(result, item)\n  end\nend\n\nreturn result",
+        "json_wrapper": {
+          "result": "lua{\nlocal result = _utils.array.new()\nlocal items = wf.vars.parsedCsv\n\nfor _, item in ipairs(items) do\n  if (item.Discount ~= \"\" and item.Discount ~= nil) or (item.Markdown ~= \"\" and item.Markdown ~= nil) then\n    table.insert(result, item)\n  end\nend\n\nreturn result\n}lua"
+        }
+      },
+      "input_roots": [
+        "wf.vars.parsedCsv"
+      ],
+      "risk_tags": [
+        "array_allocation",
+        "empty_value_filtering",
+        "nil_handling",
+        "json_wrapper"
+      ],
+      "source_ref": "public_selection_pdf:2.6"
+    },
+    {
+      "id": "case-07-add-squared-variable",
+      "title": "Дополнение существующего кода",
+      "prompt": "Добавь переменную с квадратом числа.",
+      "context": null,
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "patch_mode"
+      ],
+      "primary_output_mode": "patch_mode",
+      "expected_outputs": {
+        "patch_mode": {
+          "num": "lua{return tonumber('5')}lua",
+          "squared": "lua{local n = tonumber('5')\nreturn n * n}lua"
+        }
+      },
+      "input_roots": [],
+      "risk_tags": [
+        "patch_payload",
+        "numeric_transform",
+        "no_full_rewrite"
+      ],
+      "source_ref": "public_selection_pdf:2.7"
+    },
+    {
+      "id": "case-08-unix-time-conversion",
+      "title": "Конвертация времени",
+      "prompt": "Конвертируй время в переменной recallTime в unix-формат.",
+      "context": {
+        "wf": {
+          "initVariables": {
+            "recallTime": "2023-10-15T15:30:00+00:00"
+          }
+        }
+      },
+      "archetype": "datetime_conversion",
+      "allowed_output_modes": [
+        "raw_lua",
+        "json_wrapper"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local iso_time = wf.initVariables.recallTime\nlocal days_in_month = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31}\n\nif not iso_time or not iso_time:match(\"^%d%d%d%d%-%d%d%-%d%dT\") then\n  return nil\nend\n\nlocal function is_leap_year(year)\n  return (year % 4 == 0 and year % 100 ~= 0) or (year % 400 == 0)\nend\n\nlocal function days_since_epoch(year, month, day)\n  local days = 0\n  for y = 1970, year - 1 do\n    days = days + (is_leap_year(y) and 366 or 365)\n  end\n  for m = 1, month - 1 do\n    days = days + days_in_month[m]\n    if m == 2 and is_leap_year(year) then\n      days = days + 1\n    end\n  end\n  days = days + (day - 1)\n  return days\nend\n\nlocal function parse_iso8601_to_epoch(iso_str)\n  if not iso_str then\n    error(\"Дата не задана (nil)\")\n  end\n\n  -- Пробуем с миллисекундами\n  local year, month, day, hour, min, sec, ms, offset_sign, offset_hour, offset_min =\n    iso_str:match(\"(%d+)%-(%d+)%-(%d+)T(%d+):(%d+):(%d+)%.(%d+)([+-])(%d+):(%d+)\")\n\n  -- Если не удалось — пробуем без миллисекунд\n  if not year then\n    year, month, day, hour, min, sec, offset_sign, offset_hour, offset_min =\n      iso_str:match(\"(%d+)%-(%d+)%-(%d+)T(%d+):(%d+):(%d+)([+-])(%d+):(%d+)\")\n    ms = 0\n  end\n\n  if not year then\n    error(\"Невозможно разобрать дату: \" .. tostring(iso_str))\n  end\n\n  year = tonumber(year)\n  month = tonumber(month)\n  day = tonumber(day)\n  hour = tonumber(hour)\n  min = tonumber(min)\n  sec = tonumber(sec)\n  ms = tonumber(ms) or 0\n  offset_hour = tonumber(offset_hour)\n  offset_min = tonumber(offset_min)\n\n  local total_days = days_since_epoch(year, month, day)\n  local total_seconds = total_days * 86400 + hour * 3600 + min * 60 + sec\n\n  local offset_seconds = offset_hour * 3600 + offset_min * 60\n\n  if offset_sign == \"-\" then\n    offset_seconds = -offset_seconds\n  end\n\n  return total_seconds - offset_seconds\nend\n\nlocal epoch_seconds = parse_iso8601_to_epoch(iso_time)\nreturn epoch_seconds",
+        "json_wrapper": {
+          "unix_time": "lua{\nlocal iso_time = wf.initVariables.recallTime\nlocal days_in_month = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31}\n\nif not iso_time or not iso_time:match(\"^%d%d%d%d%-%d%d%-%d%dT\") then\n  return nil\nend\n\nlocal function is_leap_year(year)\n  return (year % 4 == 0 and year % 100 ~= 0) or (year % 400 == 0)\nend\n\nlocal function days_since_epoch(year, month, day)\n  local days = 0\n  for y = 1970, year - 1 do\n    days = days + (is_leap_year(y) and 366 or 365)\n  end\n  for m = 1, month - 1 do\n    days = days + days_in_month[m]\n    if m == 2 and is_leap_year(year) then\n      days = days + 1\n    end\n  end\n  days = days + (day - 1)\n  return days\nend\n\nlocal function parse_iso8601_to_epoch(iso_str)\n  if not iso_str then\n    error(\"Дата не задана (nil)\")\n  end\n\n  -- Пробуем с миллисекундами\n  local year, month, day, hour, min, sec, ms, offset_sign, offset_hour, offset_min =\n    iso_str:match(\"(%d+)%-(%d+)%-(%d+)T(%d+):(%d+):(%d+)%.(%d+)([+-])(%d+):(%d+)\")\n\n  -- Если не удалось — пробуем без миллисекунд\n  if not year then\n    year, month, day, hour, min, sec, offset_sign, offset_hour, offset_min =\n      iso_str:match(\"(%d+)%-(%d+)%-(%d+)T(%d+):(%d+):(%d+)([+-])(%d+):(%d+)\")\n    ms = 0\n  end\n\n  if not year then\n    error(\"Невозможно разобрать дату: \" .. tostring(iso_str))\n  end\n\n  year = tonumber(year)\n  month = tonumber(month)\n  day = tonumber(day)\n  hour = tonumber(hour)\n  min = tonumber(min)\n  sec = tonumber(sec)\n  ms = tonumber(ms) or 0\n  offset_hour = tonumber(offset_hour)\n  offset_min = tonumber(offset_min)\n\n  local total_days = days_since_epoch(year, month, day)\n  local total_seconds = total_days * 86400 + hour * 3600 + min * 60 + sec\n\n  local offset_seconds = offset_hour * 3600 + offset_min * 60\n\n  if offset_sign == \"-\" then\n    offset_seconds = -offset_seconds\n  end\n\n  return total_seconds - offset_seconds\nend\n\nlocal epoch_seconds = parse_iso8601_to_epoch(iso_time)\nreturn epoch_seconds\n}lua"
+        }
+      },
+      "input_roots": [
+        "wf.initVariables.recallTime"
+      ],
+      "risk_tags": [
+        "datetime_conversion",
+        "init_variables",
+        "timezone_offset",
+        "json_wrapper"
+      ],
+      "source_ref": "public_selection_pdf:2.8"
+    }
+  ]
+}
