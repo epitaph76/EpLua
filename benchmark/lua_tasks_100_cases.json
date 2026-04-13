@@ -1,0 +1,3805 @@
+{
+  "dataset_id": "localscript-lua-tasks-100-holdout",
+  "version": "1.0.0",
+  "retrieval_eligible": false,
+  "source_refs": [
+    {
+      "id": "lua_benchmark_tasks_100_txt",
+      "type": "txt",
+      "location": "C:\\Users\\epitaph\\Downloads\\lua_benchmark_tasks_100_with_solutions.txt",
+      "notes": "External holdout benchmark. Do not move these cases into knowledge/examples."
+    }
+  ],
+  "cases": [
+    {
+      "id": "lua100-task-001",
+      "title": "Из массива orders получи id первого заказа со статусом \"PAID\".",
+      "category": "извлечение данных",
+      "prompt": "Из массива orders получи id первого заказа со статусом \"PAID\".",
+      "context": {
+        "wf": {
+          "vars": {
+            "orders": [
+              {
+                "id": "O-101",
+                "status": "NEW"
+              },
+              {
+                "id": "O-102",
+                "status": "PAID"
+              },
+              {
+                "id": "O-103",
+                "status": "PAID"
+              }
+            ]
+          }
+        }
+      },
+      "archetype": "simple_extraction",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local orders = wf.vars.orders\nfor _, order in ipairs(orders) do\n  if order.status == \"PAID\" then\n    return order.id\n  end\nend\nreturn nil"
+      },
+      "input_roots": [
+        "wf.vars.orders"
+      ],
+      "risk_tags": [
+        "nil_handling"
+      ],
+      "expected_return_description": "Строку с id первого подходящего заказа.",
+      "source_ref": "lua_benchmark_tasks_100_txt:001"
+    },
+    {
+      "id": "lua100-task-002",
+      "title": "Из массива comments получи последний непустой комментарий.",
+      "category": "извлечение данных",
+      "prompt": "Из массива comments получи последний непустой комментарий.",
+      "context": {
+        "wf": {
+          "vars": {
+            "comments": [
+              "",
+              "ok",
+              "",
+              "need call back"
+            ]
+          }
+        }
+      },
+      "archetype": "simple_extraction",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local comments = wf.vars.comments\nfor i = #comments, 1, -1 do\n  local comment = comments[i]\n  if comment ~= nil and comment ~= \"\" then\n    return comment\n  end\nend\nreturn nil"
+      },
+      "input_roots": [
+        "wf.vars.comments"
+      ],
+      "risk_tags": [
+        "nil_handling",
+        "empty_value_filtering"
+      ],
+      "expected_return_description": "Строку с последним непустым значением.",
+      "source_ref": "lua_benchmark_tasks_100_txt:002"
+    },
+    {
+      "id": "lua100-task-003",
+      "title": "Увеличь значение переменной invoiceRetryCount на 1.",
+      "category": "арифметика",
+      "prompt": "Увеличь значение переменной invoiceRetryCount на 1.",
+      "context": {
+        "wf": {
+          "vars": {
+            "invoiceRetryCount": 4
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "return wf.vars.invoiceRetryCount + 1"
+      },
+      "input_roots": [
+        "wf.vars.invoiceRetryCount"
+      ],
+      "risk_tags": [
+        "numeric_transform"
+      ],
+      "expected_return_description": "Число.",
+      "source_ref": "lua_benchmark_tasks_100_txt:003"
+    },
+    {
+      "id": "lua100-task-004",
+      "title": "Посчитай остаток товара как availableQty минус reservedQty.",
+      "category": "арифметика",
+      "prompt": "Посчитай остаток товара как availableQty минус reservedQty.",
+      "context": {
+        "wf": {
+          "vars": {
+            "availableQty": 18,
+            "reservedQty": 5
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "return wf.vars.availableQty - wf.vars.reservedQty"
+      },
+      "input_roots": [
+        "wf.vars.availableQty",
+        "wf.vars.reservedQty"
+      ],
+      "risk_tags": [
+        "numeric_transform"
+      ],
+      "expected_return_description": "Число.",
+      "source_ref": "lua_benchmark_tasks_100_txt:004"
+    },
+    {
+      "id": "lua100-task-005",
+      "title": "Посчитай сумму по строке заказа: price умножить на quantity.",
+      "category": "арифметика",
+      "prompt": "Посчитай сумму по строке заказа: price умножить на quantity.",
+      "context": {
+        "wf": {
+          "vars": {
+            "line": {
+              "price": 149.5,
+              "quantity": 3
+            }
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "return wf.vars.line.price * wf.vars.line.quantity"
+      },
+      "input_roots": [
+        "wf.vars.line.price",
+        "wf.vars.line.quantity"
+      ],
+      "risk_tags": [
+        "numeric_transform"
+      ],
+      "expected_return_description": "Число total.",
+      "source_ref": "lua_benchmark_tasks_100_txt:005"
+    },
+    {
+      "id": "lua100-task-006",
+      "title": "Посчитай сумму скидки в деньгах по total и discountPercent.",
+      "category": "арифметика",
+      "prompt": "Посчитай сумму скидки в деньгах по total и discountPercent.",
+      "context": {
+        "wf": {
+          "vars": {
+            "total": 1200,
+            "discountPercent": "15"
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "return wf.vars.total * tonumber(wf.vars.discountPercent) / 100"
+      },
+      "input_roots": [
+        "wf.vars.total",
+        "wf.vars.discountPercent"
+      ],
+      "risk_tags": [
+        "numeric_transform"
+      ],
+      "expected_return_description": "Число со скидкой в деньгах.",
+      "source_ref": "lua_benchmark_tasks_100_txt:006"
+    },
+    {
+      "id": "lua100-task-007",
+      "title": "Собери полное имя из firstName, lastName и middleName, пропуская пустые части.",
+      "category": "строки",
+      "prompt": "Собери полное имя из firstName, lastName и middleName, пропуская пустые части.",
+      "context": {
+        "wf": {
+          "vars": {
+            "person": {
+              "firstName": "Иван",
+              "lastName": "Петров",
+              "middleName": ""
+            }
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local person = wf.vars.person\nlocal parts = {}\nif person.lastName ~= nil and person.lastName ~= \"\" then\n  table.insert(parts, person.lastName)\nend\nif person.firstName ~= nil and person.firstName ~= \"\" then\n  table.insert(parts, person.firstName)\nend\nif person.middleName ~= nil and person.middleName ~= \"\" then\n  table.insert(parts, person.middleName)\nend\nreturn table.concat(parts, \" \")"
+      },
+      "input_roots": [
+        "wf.vars.person"
+      ],
+      "risk_tags": [
+        "nil_handling",
+        "empty_value_filtering"
+      ],
+      "expected_return_description": "Строку fullName без лишних пробелов.",
+      "source_ref": "lua_benchmark_tasks_100_txt:007"
+    },
+    {
+      "id": "lua100-task-008",
+      "title": "Нормализуй номер телефона: убери пробелы, скобки, дефисы и знак плюс.",
+      "category": "строки",
+      "prompt": "Нормализуй номер телефона: убери пробелы, скобки, дефисы и знак плюс.",
+      "context": {
+        "wf": {
+          "vars": {
+            "phone": "+7 (999) 123-45-67"
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "return string.gsub(wf.vars.phone, \"[^%d]\", \"\")"
+      },
+      "input_roots": [
+        "wf.vars.phone"
+      ],
+      "risk_tags": [
+        "empty_value_filtering"
+      ],
+      "expected_return_description": "Строку только из цифр.",
+      "source_ref": "lua_benchmark_tasks_100_txt:008"
+    },
+    {
+      "id": "lua100-task-009",
+      "title": "Преобразуй код валюты currency в верхний регистр.",
+      "category": "строки",
+      "prompt": "Преобразуй код валюты currency в верхний регистр.",
+      "context": {
+        "wf": {
+          "vars": {
+            "currency": "rub"
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "return string.upper(wf.vars.currency)"
+      },
+      "input_roots": [
+        "wf.vars.currency"
+      ],
+      "risk_tags": [],
+      "expected_return_description": "Строку в верхнем регистре.",
+      "source_ref": "lua_benchmark_tasks_100_txt:009"
+    },
+    {
+      "id": "lua100-task-010",
+      "title": "Убери пробелы по краям у значения promoCode.",
+      "category": "строки",
+      "prompt": "Убери пробелы по краям у значения promoCode.",
+      "context": {
+        "wf": {
+          "vars": {
+            "promoCode": "  SPRING2026  "
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "return string.match(wf.vars.promoCode, \"^%s*(.-)%s*$\")"
+      },
+      "input_roots": [
+        "wf.vars.promoCode"
+      ],
+      "risk_tags": [],
+      "expected_return_description": "Строку без пробелов по краям.",
+      "source_ref": "lua_benchmark_tasks_100_txt:010"
+    },
+    {
+      "id": "lua100-task-011",
+      "title": "Оставь только товары, у которых stock больше 0.",
+      "category": "фильтрация массива",
+      "prompt": "Оставь только товары, у которых stock больше 0.",
+      "context": {
+        "wf": {
+          "vars": {
+            "products": [
+              {
+                "sku": "A1",
+                "stock": 0
+              },
+              {
+                "sku": "A2",
+                "stock": 7
+              },
+              {
+                "sku": "A3",
+                "stock": 2
+              }
+            ]
+          }
+        }
+      },
+      "archetype": "filtering",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local result = _utils.array.new()\nfor _, product in ipairs(wf.vars.products) do\n  if product.stock > 0 then\n    table.insert(result, product)\n  end\nend\nreturn result"
+      },
+      "input_roots": [
+        "wf.vars.products"
+      ],
+      "risk_tags": [
+        "array_allocation"
+      ],
+      "expected_return_description": "Массив объектов.",
+      "source_ref": "lua_benchmark_tasks_100_txt:011"
+    },
+    {
+      "id": "lua100-task-012",
+      "title": "Оставь только контакты, у которых email не пустой и не null.",
+      "category": "фильтрация массива",
+      "prompt": "Оставь только контакты, у которых email не пустой и не null.",
+      "context": {
+        "wf": {
+          "vars": {
+            "contacts": [
+              {
+                "name": "Ann",
+                "email": "ann@example.com"
+              },
+              {
+                "name": "Bob",
+                "email": ""
+              },
+              {
+                "name": "Chris",
+                "email": null
+              }
+            ]
+          }
+        }
+      },
+      "archetype": "filtering",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local result = _utils.array.new()\nfor _, contact in ipairs(wf.vars.contacts) do\n  if contact.email ~= nil and contact.email ~= \"\" then\n    table.insert(result, contact)\n  end\nend\nreturn result"
+      },
+      "input_roots": [
+        "wf.vars.contacts"
+      ],
+      "risk_tags": [
+        "array_allocation",
+        "nil_handling",
+        "empty_value_filtering"
+      ],
+      "expected_return_description": "Массив объектов.",
+      "source_ref": "lua_benchmark_tasks_100_txt:012"
+    },
+    {
+      "id": "lua100-task-013",
+      "title": "Отфильтруй события и оставь только те, которые не отменены.",
+      "category": "фильтрация массива",
+      "prompt": "Отфильтруй события и оставь только те, которые не отменены.",
+      "context": {
+        "wf": {
+          "vars": {
+            "events": [
+              {
+                "id": 1,
+                "cancelled": false
+              },
+              {
+                "id": 2,
+                "cancelled": true
+              },
+              {
+                "id": 3,
+                "cancelled": false
+              }
+            ]
+          }
+        }
+      },
+      "archetype": "filtering",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local result = _utils.array.new()\nfor _, event in ipairs(wf.vars.events) do\n  if event.cancelled ~= true then\n    table.insert(result, event)\n  end\nend\nreturn result"
+      },
+      "input_roots": [
+        "wf.vars.events"
+      ],
+      "risk_tags": [
+        "array_allocation"
+      ],
+      "expected_return_description": "Массив событий.",
+      "source_ref": "lua_benchmark_tasks_100_txt:013"
+    },
+    {
+      "id": "lua100-task-014",
+      "title": "Оставь только те строки, где заполнены и sku, и quantity.",
+      "category": "фильтрация массива",
+      "prompt": "Оставь только те строки, где заполнены и sku, и quantity.",
+      "context": {
+        "wf": {
+          "vars": {
+            "lines": [
+              {
+                "sku": "X1",
+                "quantity": 2
+              },
+              {
+                "sku": "",
+                "quantity": 4
+              },
+              {
+                "sku": "X3",
+                "quantity": null
+              }
+            ]
+          }
+        }
+      },
+      "archetype": "filtering",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local result = _utils.array.new()\nfor _, line in ipairs(wf.vars.lines) do\n  if line.sku ~= nil and line.sku ~= \"\" and line.quantity ~= nil then\n    table.insert(result, line)\n  end\nend\nreturn result"
+      },
+      "input_roots": [
+        "wf.vars.lines"
+      ],
+      "risk_tags": [
+        "array_allocation",
+        "nil_handling",
+        "empty_value_filtering"
+      ],
+      "expected_return_description": "Массив объектов.",
+      "source_ref": "lua_benchmark_tasks_100_txt:014"
+    },
+    {
+      "id": "lua100-task-015",
+      "title": "Оставь только записи со статусом \"NEW\" или \"PROCESSING\".",
+      "category": "фильтрация массива",
+      "prompt": "Оставь только записи со статусом \"NEW\" или \"PROCESSING\".",
+      "context": {
+        "wf": {
+          "vars": {
+            "records": [
+              {
+                "id": "R1",
+                "status": "NEW"
+              },
+              {
+                "id": "R2",
+                "status": "DONE"
+              },
+              {
+                "id": "R3",
+                "status": "PROCESSING"
+              }
+            ]
+          }
+        }
+      },
+      "archetype": "filtering",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local result = _utils.array.new()\nfor _, record in ipairs(wf.vars.records) do\n  if record.status == \"NEW\" or record.status == \"PROCESSING\" then\n    table.insert(result, record)\n  end\nend\nreturn result"
+      },
+      "input_roots": [
+        "wf.vars.records"
+      ],
+      "risk_tags": [
+        "array_allocation"
+      ],
+      "expected_return_description": "Массив объектов.",
+      "source_ref": "lua_benchmark_tasks_100_txt:015"
+    },
+    {
+      "id": "lua100-task-016",
+      "title": "Оставь только документы, у которых массив files не пустой.",
+      "category": "фильтрация массива",
+      "prompt": "Оставь только документы, у которых массив files не пустой.",
+      "context": {
+        "wf": {
+          "vars": {
+            "docs": [
+              {
+                "id": "D1",
+                "files": []
+              },
+              {
+                "id": "D2",
+                "files": [
+                  {
+                    "name": "a.pdf"
+                  }
+                ]
+              },
+              {
+                "id": "D3",
+                "files": [
+                  {
+                    "name": "b.pdf"
+                  },
+                  {
+                    "name": "c.pdf"
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "archetype": "filtering",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local result = _utils.array.new()\nfor _, doc in ipairs(wf.vars.docs) do\n  if doc.files ~= nil and #doc.files > 0 then\n    table.insert(result, doc)\n  end\nend\nreturn result"
+      },
+      "input_roots": [
+        "wf.vars.docs"
+      ],
+      "risk_tags": [
+        "array_allocation",
+        "nil_handling"
+      ],
+      "expected_return_description": "Массив документов.",
+      "source_ref": "lua_benchmark_tasks_100_txt:016"
+    },
+    {
+      "id": "lua100-task-017",
+      "title": "Удали дубликаты по sku, сохранив первое вхождение.",
+      "category": "уникализация",
+      "prompt": "Удали дубликаты по sku, сохранив первое вхождение.",
+      "context": {
+        "wf": {
+          "vars": {
+            "items": [
+              {
+                "sku": "A1",
+                "qty": 1
+              },
+              {
+                "sku": "A2",
+                "qty": 2
+              },
+              {
+                "sku": "A1",
+                "qty": 5
+              },
+              {
+                "sku": "A3",
+                "qty": 1
+              }
+            ]
+          }
+        }
+      },
+      "archetype": "filtering",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local result = _utils.array.new()\nlocal seen = {}\nfor _, item in ipairs(wf.vars.items) do\n  if not seen[item.sku] then\n    seen[item.sku] = true\n    table.insert(result, item)\n  end\nend\nreturn result"
+      },
+      "input_roots": [
+        "wf.vars.items"
+      ],
+      "risk_tags": [
+        "array_allocation"
+      ],
+      "expected_return_description": "Массив объектов без повторяющихся sku.",
+      "source_ref": "lua_benchmark_tasks_100_txt:017"
+    },
+    {
+      "id": "lua100-task-018",
+      "title": "Из массива users собери новый массив только из id.",
+      "category": "проекция массива",
+      "prompt": "Из массива users собери новый массив только из id.",
+      "context": {
+        "wf": {
+          "vars": {
+            "users": [
+              {
+                "id": 11,
+                "name": "Ann"
+              },
+              {
+                "id": 12,
+                "name": "Bob"
+              },
+              {
+                "id": 13,
+                "name": "Chris"
+              }
+            ]
+          }
+        }
+      },
+      "archetype": "filtering",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local result = _utils.array.new()\nfor _, user in ipairs(wf.vars.users) do\n  table.insert(result, user.id)\nend\nreturn result"
+      },
+      "input_roots": [
+        "wf.vars.users"
+      ],
+      "risk_tags": [
+        "array_allocation"
+      ],
+      "expected_return_description": "Массив чисел.",
+      "source_ref": "lua_benchmark_tasks_100_txt:018"
+    },
+    {
+      "id": "lua100-task-019",
+      "title": "Из массива departments собери массив names только для включённых отделов.",
+      "category": "проекция массива",
+      "prompt": "Из массива departments собери массив names только для включённых отделов.",
+      "context": {
+        "wf": {
+          "vars": {
+            "departments": [
+              {
+                "name": "Sales",
+                "enabled": true
+              },
+              {
+                "name": "QA",
+                "enabled": false
+              },
+              {
+                "name": "Support",
+                "enabled": true
+              }
+            ]
+          }
+        }
+      },
+      "archetype": "filtering",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local result = _utils.array.new()\nfor _, department in ipairs(wf.vars.departments) do\n  if department.enabled == true then\n    table.insert(result, department.name)\n  end\nend\nreturn result"
+      },
+      "input_roots": [
+        "wf.vars.departments"
+      ],
+      "risk_tags": [
+        "array_allocation"
+      ],
+      "expected_return_description": "Массив строк.",
+      "source_ref": "lua_benchmark_tasks_100_txt:019"
+    },
+    {
+      "id": "lua100-task-020",
+      "title": "Собери один общий массив всех items из массива packages.",
+      "category": "разворачивание вложенности",
+      "prompt": "Собери один общий массив всех items из массива packages.",
+      "context": {
+        "wf": {
+          "vars": {
+            "packages": [
+              {
+                "number": "P1",
+                "items": [
+                  {
+                    "sku": "A"
+                  },
+                  {
+                    "sku": "B"
+                  }
+                ]
+              },
+              {
+                "number": "P2",
+                "items": [
+                  {
+                    "sku": "C"
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "archetype": "filtering",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local result = _utils.array.new()\nfor _, package in ipairs(wf.vars.packages) do\n  for _, item in ipairs(package.items) do\n    table.insert(result, item)\n  end\nend\nreturn result"
+      },
+      "input_roots": [
+        "wf.vars.packages"
+      ],
+      "risk_tags": [
+        "array_allocation"
+      ],
+      "expected_return_description": "Один массив items.",
+      "source_ref": "lua_benchmark_tasks_100_txt:020"
+    },
+    {
+      "id": "lua100-task-021",
+      "title": "Если tags не является массивом, оберни значение в массив.",
+      "category": "нормализация типов",
+      "prompt": "Если tags не является массивом, оберни значение в массив.",
+      "context": {
+        "wf": {
+          "vars": {
+            "tags": {
+              "code": "priority"
+            }
+          }
+        }
+      },
+      "archetype": "normalization",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local function ensureArray(value)\n  if type(value) ~= \"table\" then\n    return {value}\n  end\n\n  local isArray = true\n  for key, _ in pairs(value) do\n    if type(key) ~= \"number\" or math.floor(key) ~= key then\n      isArray = false\n      break\n    end\n  end\n\n  if isArray then\n    return value\n  end\n\n  return {value}\nend\n\nreturn ensureArray(wf.vars.tags)"
+      },
+      "input_roots": [
+        "wf.vars.tags"
+      ],
+      "risk_tags": [
+        "array_semantics",
+        "type_normalization"
+      ],
+      "expected_return_description": "Массив.",
+      "source_ref": "lua_benchmark_tasks_100_txt:021"
+    },
+    {
+      "id": "lua100-task-022",
+      "title": "Сделай так, чтобы attachments у каждого сообщения всегда были массивом.",
+      "category": "нормализация типов",
+      "prompt": "Сделай так, чтобы attachments у каждого сообщения всегда были массивом.",
+      "context": {
+        "wf": {
+          "vars": {
+            "messages": [
+              {
+                "id": 1,
+                "attachments": [
+                  {
+                    "name": "a.txt"
+                  }
+                ]
+              },
+              {
+                "id": 2,
+                "attachments": {
+                  "name": "b.txt"
+                }
+              }
+            ]
+          }
+        }
+      },
+      "archetype": "normalization",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local function ensureArray(value)\n  if type(value) ~= \"table\" then\n    return {value}\n  end\n\n  local isArray = true\n  for key, _ in pairs(value) do\n    if type(key) ~= \"number\" or math.floor(key) ~= key then\n      isArray = false\n      break\n    end\n  end\n\n  if isArray then\n    return value\n  end\n\n  return {value}\nend\n\nlocal messages = wf.vars.messages\nfor _, message in ipairs(messages) do\n  message.attachments = ensureArray(message.attachments)\nend\nreturn messages"
+      },
+      "input_roots": [
+        "wf.vars.messages"
+      ],
+      "risk_tags": [
+        "array_semantics",
+        "type_normalization"
+      ],
+      "expected_return_description": "Массив messages с нормализованными attachments.",
+      "source_ref": "lua_benchmark_tasks_100_txt:022"
+    },
+    {
+      "id": "lua100-task-023",
+      "title": "Если phone хранится строкой, преобразуй его в массив из одного элемента.",
+      "category": "нормализация типов",
+      "prompt": "Если phone хранится строкой, преобразуй его в массив из одного элемента.",
+      "context": {
+        "wf": {
+          "vars": {
+            "phone": "79991234567"
+          }
+        }
+      },
+      "archetype": "normalization",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "if type(wf.vars.phone) == \"table\" then\n  return wf.vars.phone\nend\nreturn {wf.vars.phone}"
+      },
+      "input_roots": [
+        "wf.vars.phone"
+      ],
+      "risk_tags": [
+        "array_semantics",
+        "type_normalization"
+      ],
+      "expected_return_description": "Массив строк.",
+      "source_ref": "lua_benchmark_tasks_100_txt:023"
+    },
+    {
+      "id": "lua100-task-024",
+      "title": "Если у пользователя role пустая или null, подставь значение \"guest\".",
+      "category": "значения по умолчанию",
+      "prompt": "Если у пользователя role пустая или null, подставь значение \"guest\".",
+      "context": {
+        "wf": {
+          "vars": {
+            "user": {
+              "name": "Nika",
+              "role": null
+            }
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local role = wf.vars.user.role\nif role == nil or role == \"\" then\n  return \"guest\"\nend\nreturn role"
+      },
+      "input_roots": [
+        "wf.vars.user.role"
+      ],
+      "risk_tags": [
+        "nil_handling",
+        "empty_value_filtering"
+      ],
+      "expected_return_description": "Строку с ролью.",
+      "source_ref": "lua_benchmark_tasks_100_txt:024"
+    },
+    {
+      "id": "lua100-task-025",
+      "title": "Для каждого пользователя добавь поле isAdult со значением true, если age не меньше 18.",
+      "category": "обогащение данных",
+      "prompt": "Для каждого пользователя добавь поле isAdult со значением true, если age не меньше 18.",
+      "context": {
+        "wf": {
+          "vars": {
+            "users": [
+              {
+                "name": "Ann",
+                "age": 17
+              },
+              {
+                "name": "Bob",
+                "age": 18
+              },
+              {
+                "name": "Chris",
+                "age": 25
+              }
+            ]
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local users = wf.vars.users\nfor _, user in ipairs(users) do\n  user.isAdult = user.age ~= nil and user.age >= 18\nend\nreturn users"
+      },
+      "input_roots": [
+        "wf.vars.users"
+      ],
+      "risk_tags": [
+        "nil_handling"
+      ],
+      "expected_return_description": "Массив пользователей с новым полем.",
+      "source_ref": "lua_benchmark_tasks_100_txt:025"
+    },
+    {
+      "id": "lua100-task-026",
+      "title": "Для каждого заказа добавь поле hasDiscount, если discount больше 0.",
+      "category": "обогащение данных",
+      "prompt": "Для каждого заказа добавь поле hasDiscount, если discount больше 0.",
+      "context": {
+        "wf": {
+          "vars": {
+            "orders": [
+              {
+                "id": "O1",
+                "discount": 0
+              },
+              {
+                "id": "O2",
+                "discount": 50
+              },
+              {
+                "id": "O3",
+                "discount": 10
+              }
+            ]
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local orders = wf.vars.orders\nfor _, order in ipairs(orders) do\n  order.hasDiscount = order.discount ~= nil and order.discount > 0\nend\nreturn orders"
+      },
+      "input_roots": [
+        "wf.vars.orders"
+      ],
+      "risk_tags": [
+        "nil_handling"
+      ],
+      "expected_return_description": "Массив заказов с новым булевым полем.",
+      "source_ref": "lua_benchmark_tasks_100_txt:026"
+    },
+    {
+      "id": "lua100-task-027",
+      "title": "Для адреса подставь country = \"RU\", если поле country пустое.",
+      "category": "значения по умолчанию",
+      "prompt": "Для адреса подставь country = \"RU\", если поле country пустое.",
+      "context": {
+        "wf": {
+          "vars": {
+            "address": {
+              "city": "Москва",
+              "country": ""
+            }
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local address = wf.vars.address\nif address.country == nil or address.country == \"\" then\n  address.country = \"RU\"\nend\nreturn address"
+      },
+      "input_roots": [
+        "wf.vars.address"
+      ],
+      "risk_tags": [
+        "nil_handling",
+        "empty_value_filtering"
+      ],
+      "expected_return_description": "Объект address.",
+      "source_ref": "lua_benchmark_tasks_100_txt:027"
+    },
+    {
+      "id": "lua100-task-028",
+      "title": "Удали из profile все поля, где значение равно пустой строке.",
+      "category": "очистка объекта",
+      "prompt": "Удали из profile все поля, где значение равно пустой строке.",
+      "context": {
+        "wf": {
+          "vars": {
+            "profile": {
+              "name": "Olga",
+              "email": "",
+              "phone": "79990000000",
+              "telegram": ""
+            }
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local profile = wf.vars.profile\nfor key, value in pairs(profile) do\n  if value == \"\" then\n    profile[key] = nil\n  end\nend\nreturn profile"
+      },
+      "input_roots": [
+        "wf.vars.profile"
+      ],
+      "risk_tags": [
+        "nil_handling",
+        "empty_value_filtering",
+        "table_mutation"
+      ],
+      "expected_return_description": "Очищенный объект profile.",
+      "source_ref": "lua_benchmark_tasks_100_txt:028"
+    },
+    {
+      "id": "lua100-task-029",
+      "title": "Из invoice оставь только поля id, number и total.",
+      "category": "выбор ключей",
+      "prompt": "Из invoice оставь только поля id, number и total.",
+      "context": {
+        "wf": {
+          "vars": {
+            "invoice": {
+              "id": "I-15",
+              "number": "2026-15",
+              "total": 5400,
+              "currency": "RUB",
+              "customer": "ACME"
+            }
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local invoice = wf.vars.invoice\nreturn {\n  id = invoice.id,\n  number = invoice.number,\n  total = invoice.total\n}"
+      },
+      "input_roots": [
+        "wf.vars.invoice"
+      ],
+      "risk_tags": [],
+      "expected_return_description": "Новый объект только с нужными полями.",
+      "source_ref": "lua_benchmark_tasks_100_txt:029"
+    },
+    {
+      "id": "lua100-task-030",
+      "title": "Переименуй поле client_name в clientName и верни объект.",
+      "category": "переименование поля",
+      "prompt": "Переименуй поле client_name в clientName и верни объект.",
+      "context": {
+        "wf": {
+          "vars": {
+            "customer": {
+              "client_name": "ООО Вектор",
+              "city": "Казань"
+            }
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local customer = wf.vars.customer\ncustomer.clientName = customer.client_name\ncustomer.client_name = nil\nreturn customer"
+      },
+      "input_roots": [
+        "wf.vars.customer"
+      ],
+      "risk_tags": [
+        "nil_handling",
+        "table_mutation"
+      ],
+      "expected_return_description": "Объект с полем clientName.",
+      "source_ref": "lua_benchmark_tasks_100_txt:030"
+    },
+    {
+      "id": "lua100-task-031",
+      "title": "Найди максимальное значение score в массиве results.",
+      "category": "поиск максимума",
+      "prompt": "Найди максимальное значение score в массиве results.",
+      "context": {
+        "wf": {
+          "vars": {
+            "results": [
+              {
+                "score": 73
+              },
+              {
+                "score": 91
+              },
+              {
+                "score": 88
+              }
+            ]
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local maxScore = nil\nfor _, result in ipairs(wf.vars.results) do\n  if maxScore == nil or result.score > maxScore then\n    maxScore = result.score\n  end\nend\nreturn maxScore"
+      },
+      "input_roots": [
+        "wf.vars.results"
+      ],
+      "risk_tags": [
+        "nil_handling",
+        "table_mutation"
+      ],
+      "expected_return_description": "Число.",
+      "source_ref": "lua_benchmark_tasks_100_txt:031"
+    },
+    {
+      "id": "lua100-task-032",
+      "title": "Найди минимальную стоимость доставки deliveryCost.",
+      "category": "поиск минимума",
+      "prompt": "Найди минимальную стоимость доставки deliveryCost.",
+      "context": {
+        "wf": {
+          "vars": {
+            "options": [
+              {
+                "deliveryCost": 450
+              },
+              {
+                "deliveryCost": 300
+              },
+              {
+                "deliveryCost": 520
+              }
+            ]
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local minCost = nil\nfor _, option in ipairs(wf.vars.options) do\n  if minCost == nil or option.deliveryCost < minCost then\n    minCost = option.deliveryCost\n  end\nend\nreturn minCost"
+      },
+      "input_roots": [
+        "wf.vars.options"
+      ],
+      "risk_tags": [
+        "nil_handling",
+        "table_mutation"
+      ],
+      "expected_return_description": "Число.",
+      "source_ref": "lua_benchmark_tasks_100_txt:032"
+    },
+    {
+      "id": "lua100-task-033",
+      "title": "Посчитай количество заказов со статусом \"PAID\".",
+      "category": "агрегирование",
+      "prompt": "Посчитай количество заказов со статусом \"PAID\".",
+      "context": {
+        "wf": {
+          "vars": {
+            "orders": [
+              {
+                "status": "PAID"
+              },
+              {
+                "status": "NEW"
+              },
+              {
+                "status": "PAID"
+              },
+              {
+                "status": "CANCELLED"
+              }
+            ]
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local count = 0\nfor _, order in ipairs(wf.vars.orders) do\n  if order.status == \"PAID\" then\n    count = count + 1\n  end\nend\nreturn count"
+      },
+      "input_roots": [
+        "wf.vars.orders"
+      ],
+      "risk_tags": [
+        "numeric_transform"
+      ],
+      "expected_return_description": "Число.",
+      "source_ref": "lua_benchmark_tasks_100_txt:033"
+    },
+    {
+      "id": "lua100-task-034",
+      "title": "Посчитай суммарное quantity по всем items.",
+      "category": "агрегирование",
+      "prompt": "Посчитай суммарное quantity по всем items.",
+      "context": {
+        "wf": {
+          "vars": {
+            "items": [
+              {
+                "sku": "A",
+                "quantity": 2
+              },
+              {
+                "sku": "B",
+                "quantity": 3
+              },
+              {
+                "sku": "C",
+                "quantity": 5
+              }
+            ]
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local total = 0\nfor _, item in ipairs(wf.vars.items) do\n  total = total + item.quantity\nend\nreturn total"
+      },
+      "input_roots": [
+        "wf.vars.items"
+      ],
+      "risk_tags": [
+        "numeric_transform"
+      ],
+      "expected_return_description": "Число.",
+      "source_ref": "lua_benchmark_tasks_100_txt:034"
+    },
+    {
+      "id": "lua100-task-035",
+      "title": "Посчитай суммарный вес всех packages.",
+      "category": "агрегирование",
+      "prompt": "Посчитай суммарный вес всех packages.",
+      "context": {
+        "wf": {
+          "vars": {
+            "packages": [
+              {
+                "number": "P1",
+                "weight": 10.5
+              },
+              {
+                "number": "P2",
+                "weight": 4
+              },
+              {
+                "number": "P3",
+                "weight": 7.25
+              }
+            ]
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local total = 0\nfor _, package in ipairs(wf.vars.packages) do\n  total = total + package.weight\nend\nreturn total"
+      },
+      "input_roots": [
+        "wf.vars.packages"
+      ],
+      "risk_tags": [
+        "numeric_transform"
+      ],
+      "expected_return_description": "Число.",
+      "source_ref": "lua_benchmark_tasks_100_txt:035"
+    },
+    {
+      "id": "lua100-task-036",
+      "title": "Посчитай среднее значение score по массиву marks.",
+      "category": "агрегирование",
+      "prompt": "Посчитай среднее значение score по массиву marks.",
+      "context": {
+        "wf": {
+          "vars": {
+            "marks": [
+              {
+                "score": 80
+              },
+              {
+                "score": 90
+              },
+              {
+                "score": 100
+              }
+            ]
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local total = 0\nfor _, mark in ipairs(wf.vars.marks) do\n  total = total + mark.score\nend\nif #wf.vars.marks == 0 then\n  return 0\nend\nreturn total / #wf.vars.marks"
+      },
+      "input_roots": [
+        "wf.vars.marks"
+      ],
+      "risk_tags": [
+        "numeric_transform"
+      ],
+      "expected_return_description": "Число average.",
+      "source_ref": "lua_benchmark_tasks_100_txt:036"
+    },
+    {
+      "id": "lua100-task-037",
+      "title": "Посчитай количество уникальных городов city в массиве addresses.",
+      "category": "уникальные значения",
+      "prompt": "Посчитай количество уникальных городов city в массиве addresses.",
+      "context": {
+        "wf": {
+          "vars": {
+            "addresses": [
+              {
+                "city": "Москва"
+              },
+              {
+                "city": "Казань"
+              },
+              {
+                "city": "Москва"
+              },
+              {
+                "city": "Самара"
+              }
+            ]
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local seen = {}\nlocal count = 0\nfor _, address in ipairs(wf.vars.addresses) do\n  if address.city ~= nil and not seen[address.city] then\n    seen[address.city] = true\n    count = count + 1\n  end\nend\nreturn count"
+      },
+      "input_roots": [
+        "wf.vars.addresses"
+      ],
+      "risk_tags": [
+        "nil_handling",
+        "numeric_transform"
+      ],
+      "expected_return_description": "Число.",
+      "source_ref": "lua_benchmark_tasks_100_txt:037"
+    },
+    {
+      "id": "lua100-task-038",
+      "title": "Найди первый просроченный invoice, у которого dueDate меньше currentDate.",
+      "category": "поиск по условию",
+      "prompt": "Найди первый просроченный invoice, у которого dueDate меньше currentDate.",
+      "context": {
+        "wf": {
+          "vars": {
+            "invoices": [
+              {
+                "id": "I1",
+                "dueDate": "2026-04-10"
+              },
+              {
+                "id": "I2",
+                "dueDate": "2026-04-01"
+              },
+              {
+                "id": "I3",
+                "dueDate": "2026-04-15"
+              }
+            ]
+          },
+          "initVariables": {
+            "currentDate": "2026-04-05"
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local currentDate = wf.initVariables.currentDate\nfor _, invoice in ipairs(wf.vars.invoices) do\n  if invoice.dueDate < currentDate then\n    return invoice\n  end\nend\nreturn nil"
+      },
+      "input_roots": [
+        "wf.initVariables.currentDate",
+        "wf.vars.invoices"
+      ],
+      "risk_tags": [
+        "nil_handling",
+        "init_variables"
+      ],
+      "expected_return_description": "Объект первого просроченного invoice.",
+      "source_ref": "lua_benchmark_tasks_100_txt:038"
+    },
+    {
+      "id": "lua100-task-039",
+      "title": "Найди товар с максимальной ценой и верни весь объект.",
+      "category": "поиск объекта",
+      "prompt": "Найди товар с максимальной ценой и верни весь объект.",
+      "context": {
+        "wf": {
+          "vars": {
+            "products": [
+              {
+                "sku": "A",
+                "price": 100
+              },
+              {
+                "sku": "B",
+                "price": 220
+              },
+              {
+                "sku": "C",
+                "price": 150
+              }
+            ]
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local best = nil\nfor _, product in ipairs(wf.vars.products) do\n  if best == nil or product.price > best.price then\n    best = product\n  end\nend\nreturn best"
+      },
+      "input_roots": [
+        "wf.vars.products"
+      ],
+      "risk_tags": [
+        "nil_handling",
+        "table_mutation"
+      ],
+      "expected_return_description": "Один объект product.",
+      "source_ref": "lua_benchmark_tasks_100_txt:039"
+    },
+    {
+      "id": "lua100-task-040",
+      "title": "Проверь, что у всех steps поле completed равно true.",
+      "category": "логическая проверка",
+      "prompt": "Проверь, что у всех steps поле completed равно true.",
+      "context": {
+        "wf": {
+          "vars": {
+            "steps": [
+              {
+                "name": "prepare",
+                "completed": true
+              },
+              {
+                "name": "validate",
+                "completed": true
+              },
+              {
+                "name": "send",
+                "completed": false
+              }
+            ]
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "for _, step in ipairs(wf.vars.steps) do\n  if step.completed ~= true then\n    return false\n  end\nend\nreturn true"
+      },
+      "input_roots": [
+        "wf.vars.steps"
+      ],
+      "risk_tags": [],
+      "expected_return_description": "Boolean.",
+      "source_ref": "lua_benchmark_tasks_100_txt:040"
+    },
+    {
+      "id": "lua100-task-041",
+      "title": "Преобразуй поля date = \"YYYYMMDD\" и time = \"HHMM\" в строку ISO вида YYYY-MM-DDTHH:MM:00Z.",
+      "category": "дата и время",
+      "prompt": "Преобразуй поля date = \"YYYYMMDD\" и time = \"HHMM\" в строку ISO вида YYYY-MM-DDTHH:MM:00Z.",
+      "context": {
+        "wf": {
+          "vars": {
+            "date": "20260412",
+            "time": "0915"
+          }
+        }
+      },
+      "archetype": "datetime_conversion",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local date = wf.vars.date\nlocal time = wf.vars.time\nlocal year = string.sub(date, 1, 4)\nlocal month = string.sub(date, 5, 6)\nlocal day = string.sub(date, 7, 8)\nlocal hour = string.sub(time, 1, 2)\nlocal minute = string.sub(time, 3, 4)\nreturn string.format(\"%s-%s-%sT%s:%s:00Z\", year, month, day, hour, minute)"
+      },
+      "input_roots": [
+        "wf.vars.date",
+        "wf.vars.time"
+      ],
+      "risk_tags": [
+        "substring_bounds"
+      ],
+      "expected_return_description": "Строку времени в ISO.",
+      "source_ref": "lua_benchmark_tasks_100_txt:041"
+    },
+    {
+      "id": "lua100-task-042",
+      "title": "Из ISO-времени createdAt получи только дату в формате YYYY-MM-DD.",
+      "category": "дата и время",
+      "prompt": "Из ISO-времени createdAt получи только дату в формате YYYY-MM-DD.",
+      "context": {
+        "wf": {
+          "vars": {
+            "createdAt": "2026-04-12T09:15:44+00:00"
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "return string.match(wf.vars.createdAt, \"^(%d%d%d%d%-%d%d%-%d%d)\")"
+      },
+      "input_roots": [
+        "wf.vars.createdAt"
+      ],
+      "risk_tags": [],
+      "expected_return_description": "Строку с датой.",
+      "source_ref": "lua_benchmark_tasks_100_txt:042"
+    },
+    {
+      "id": "lua100-task-043",
+      "title": "Из строки startTime получи только час.",
+      "category": "дата и время",
+      "prompt": "Из строки startTime получи только час.",
+      "context": {
+        "wf": {
+          "vars": {
+            "startTime": "18:45:12"
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "return string.match(wf.vars.startTime, \"^(%d%d)\")"
+      },
+      "input_roots": [
+        "wf.vars.startTime"
+      ],
+      "risk_tags": [],
+      "expected_return_description": "Строку \"18\" или число 18.",
+      "source_ref": "lua_benchmark_tasks_100_txt:043"
+    },
+    {
+      "id": "lua100-task-044",
+      "title": "Преобразуй durationSec в количество полных минут.",
+      "category": "время",
+      "prompt": "Преобразуй durationSec в количество полных минут.",
+      "context": {
+        "wf": {
+          "vars": {
+            "durationSec": 367
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "return math.floor(wf.vars.durationSec / 60)"
+      },
+      "input_roots": [
+        "wf.vars.durationSec"
+      ],
+      "risk_tags": [
+        "numeric_transform"
+      ],
+      "expected_return_description": "Число.",
+      "source_ref": "lua_benchmark_tasks_100_txt:044"
+    },
+    {
+      "id": "lua100-task-045",
+      "title": "Преобразуй строковое значение isActive в boolean.",
+      "category": "преобразование типов",
+      "prompt": "Преобразуй строковое значение isActive в boolean.",
+      "context": {
+        "wf": {
+          "vars": {
+            "isActive": "true"
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local value = wf.vars.isActive\nif value == true then\n  return true\nend\nreturn string.lower(tostring(value)) == \"true\""
+      },
+      "input_roots": [
+        "wf.vars.isActive"
+      ],
+      "risk_tags": [],
+      "expected_return_description": "Boolean.",
+      "source_ref": "lua_benchmark_tasks_100_txt:045"
+    },
+    {
+      "id": "lua100-task-046",
+      "title": "Преобразуй строку tagsCsv в массив значений по разделителю запятая.",
+      "category": "строки и массивы",
+      "prompt": "Преобразуй строку tagsCsv в массив значений по разделителю запятая.",
+      "context": {
+        "wf": {
+          "vars": {
+            "tagsCsv": "red,green,blue"
+          }
+        }
+      },
+      "archetype": "filtering",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local result = _utils.array.new()\nfor part in string.gmatch(wf.vars.tagsCsv, \"[^,]+\") do\n  table.insert(result, part)\nend\nreturn result"
+      },
+      "input_roots": [
+        "wf.vars.tagsCsv"
+      ],
+      "risk_tags": [
+        "array_allocation"
+      ],
+      "expected_return_description": "Массив строк.",
+      "source_ref": "lua_benchmark_tasks_100_txt:046"
+    },
+    {
+      "id": "lua100-task-047",
+      "title": "Собери строку rolesLine из массива roles через запятую и пробел.",
+      "category": "массивы и строки",
+      "prompt": "Собери строку rolesLine из массива roles через запятую и пробел.",
+      "context": {
+        "wf": {
+          "vars": {
+            "roles": [
+              "admin",
+              "editor",
+              "viewer"
+            ]
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "return table.concat(wf.vars.roles, \", \")"
+      },
+      "input_roots": [
+        "wf.vars.roles"
+      ],
+      "risk_tags": [],
+      "expected_return_description": "Строку.",
+      "source_ref": "lua_benchmark_tasks_100_txt:047"
+    },
+    {
+      "id": "lua100-task-048",
+      "title": "Преобразуй сумму в копейках amountCents в сумму в рублях с двумя знаками после точки.",
+      "category": "числа",
+      "prompt": "Преобразуй сумму в копейках amountCents в сумму в рублях с двумя знаками после точки.",
+      "context": {
+        "wf": {
+          "vars": {
+            "amountCents": 12345
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "return string.format(\"%.2f\", wf.vars.amountCents / 100)"
+      },
+      "input_roots": [
+        "wf.vars.amountCents"
+      ],
+      "risk_tags": [
+        "numeric_transform"
+      ],
+      "expected_return_description": "Строку или число 123.45.",
+      "source_ref": "lua_benchmark_tasks_100_txt:048"
+    },
+    {
+      "id": "lua100-task-049",
+      "title": "Дополнить orderNumber слева нулями до длины 8 символов.",
+      "category": "строки",
+      "prompt": "Дополнить orderNumber слева нулями до длины 8 символов.",
+      "context": {
+        "wf": {
+          "vars": {
+            "orderNumber": "125"
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local value = tostring(wf.vars.orderNumber)\nwhile #value < 8 do\n  value = \"0\" .. value\nend\nreturn value"
+      },
+      "input_roots": [
+        "wf.vars.orderNumber"
+      ],
+      "risk_tags": [],
+      "expected_return_description": "Строку длиной 8 символов.",
+      "source_ref": "lua_benchmark_tasks_100_txt:049"
+    },
+    {
+      "id": "lua100-task-050",
+      "title": "Преобразуй дату из формата DD.MM.YYYY в YYYY-MM-DD.",
+      "category": "дата",
+      "prompt": "Преобразуй дату из формата DD.MM.YYYY в YYYY-MM-DD.",
+      "context": {
+        "wf": {
+          "vars": {
+            "deliveryDate": "15.04.2026"
+          }
+        }
+      },
+      "archetype": "datetime_conversion",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local day, month, year = string.match(wf.vars.deliveryDate, \"^(%d%d)%.(%d%d)%.(%d%d%d%d)$\")\nreturn string.format(\"%s-%s-%s\", year, month, day)"
+      },
+      "input_roots": [
+        "wf.vars.deliveryDate"
+      ],
+      "risk_tags": [],
+      "expected_return_description": "Строку.",
+      "source_ref": "lua_benchmark_tasks_100_txt:050"
+    },
+    {
+      "id": "lua100-task-051",
+      "title": "Объедини массивы sourceTags и extraTags в один массив без дублей.",
+      "category": "объединение массивов",
+      "prompt": "Объедини массивы sourceTags и extraTags в один массив без дублей.",
+      "context": {
+        "wf": {
+          "vars": {
+            "sourceTags": [
+              "sale",
+              "vip"
+            ],
+            "extraTags": [
+              "vip",
+              "new",
+              "priority"
+            ]
+          }
+        }
+      },
+      "archetype": "filtering",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local result = _utils.array.new()\nlocal seen = {}\nfor _, tag in ipairs(wf.vars.sourceTags) do\n  if not seen[tag] then\n    seen[tag] = true\n    table.insert(result, tag)\n  end\nend\nfor _, tag in ipairs(wf.vars.extraTags) do\n  if not seen[tag] then\n    seen[tag] = true\n    table.insert(result, tag)\n  end\nend\nreturn result"
+      },
+      "input_roots": [
+        "wf.vars.sourceTags",
+        "wf.vars.extraTags"
+      ],
+      "risk_tags": [
+        "array_allocation"
+      ],
+      "expected_return_description": "Один массив строк без повторов.",
+      "source_ref": "lua_benchmark_tasks_100_txt:051"
+    },
+    {
+      "id": "lua100-task-052",
+      "title": "Проверь, изменился ли статус: oldStatus и newStatus.",
+      "category": "сравнение значений",
+      "prompt": "Проверь, изменился ли статус: oldStatus и newStatus.",
+      "context": {
+        "wf": {
+          "vars": {
+            "oldStatus": "NEW",
+            "newStatus": "PAID"
+          }
+        }
+      },
+      "archetype": "simple_extraction",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "return wf.vars.oldStatus ~= wf.vars.newStatus"
+      },
+      "input_roots": [
+        "wf.vars.oldStatus",
+        "wf.vars.newStatus"
+      ],
+      "risk_tags": [],
+      "expected_return_description": "Boolean.",
+      "source_ref": "lua_benchmark_tasks_100_txt:052"
+    },
+    {
+      "id": "lua100-task-053",
+      "title": "Если promoCode пустой, возьми defaultPromo из initVariables.",
+      "category": "fallback",
+      "prompt": "Если promoCode пустой, возьми defaultPromo из initVariables.",
+      "context": {
+        "wf": {
+          "vars": {
+            "promoCode": ""
+          },
+          "initVariables": {
+            "defaultPromo": "WELCOME"
+          }
+        }
+      },
+      "archetype": "simple_extraction",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local promoCode = wf.vars.promoCode\nif promoCode == nil or promoCode == \"\" then\n  return wf.initVariables.defaultPromo\nend\nreturn promoCode"
+      },
+      "input_roots": [
+        "wf.vars.promoCode",
+        "wf.initVariables.defaultPromo"
+      ],
+      "risk_tags": [
+        "nil_handling",
+        "empty_value_filtering",
+        "init_variables"
+      ],
+      "expected_return_description": "Строку с итоговым промокодом.",
+      "source_ref": "lua_benchmark_tasks_100_txt:053"
+    },
+    {
+      "id": "lua100-task-054",
+      "title": "Если manager.phone отсутствует, верни office.phone.",
+      "category": "fallback",
+      "prompt": "Если manager.phone отсутствует, верни office.phone.",
+      "context": {
+        "wf": {
+          "vars": {
+            "manager": {
+              "name": "Alex",
+              "phone": null
+            },
+            "office": {
+              "phone": "78005553535"
+            }
+          }
+        }
+      },
+      "archetype": "simple_extraction",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local phone = wf.vars.manager.phone\nif phone == nil or phone == \"\" then\n  return wf.vars.office.phone\nend\nreturn phone"
+      },
+      "input_roots": [
+        "wf.vars.manager.phone",
+        "wf.vars.office.phone"
+      ],
+      "risk_tags": [
+        "nil_handling",
+        "empty_value_filtering"
+      ],
+      "expected_return_description": "Строку телефона.",
+      "source_ref": "lua_benchmark_tasks_100_txt:054"
+    },
+    {
+      "id": "lua100-task-055",
+      "title": "Выбери основной email: сначала primaryEmail, затем backupEmail, затем contact.email.",
+      "category": "выбор значения по приоритету",
+      "prompt": "Выбери основной email: сначала primaryEmail, затем backupEmail, затем contact.email.",
+      "context": {
+        "wf": {
+          "vars": {
+            "primaryEmail": "",
+            "backupEmail": null,
+            "contact": {
+              "email": "client@example.com"
+            }
+          }
+        }
+      },
+      "archetype": "simple_extraction",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "if wf.vars.primaryEmail ~= nil and wf.vars.primaryEmail ~= \"\" then\n  return wf.vars.primaryEmail\nend\nif wf.vars.backupEmail ~= nil and wf.vars.backupEmail ~= \"\" then\n  return wf.vars.backupEmail\nend\nreturn wf.vars.contact.email"
+      },
+      "input_roots": [
+        "wf.vars.primaryEmail",
+        "wf.vars.backupEmail",
+        "wf.vars.contact.email"
+      ],
+      "risk_tags": [
+        "nil_handling",
+        "empty_value_filtering"
+      ],
+      "expected_return_description": "Строку email.",
+      "source_ref": "lua_benchmark_tasks_100_txt:055"
+    },
+    {
+      "id": "lua100-task-056",
+      "title": "Преобразуй items в объект вида sku -> quantity.",
+      "category": "преобразование структуры",
+      "prompt": "Преобразуй items в объект вида sku -> quantity.",
+      "context": {
+        "wf": {
+          "vars": {
+            "items": [
+              {
+                "sku": "A1",
+                "quantity": 2
+              },
+              {
+                "sku": "B2",
+                "quantity": 5
+              }
+            ]
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local result = {}\nfor _, item in ipairs(wf.vars.items) do\n  result[item.sku] = item.quantity\nend\nreturn result"
+      },
+      "input_roots": [
+        "wf.vars.items"
+      ],
+      "risk_tags": [],
+      "expected_return_description": "Объект-словарь.",
+      "source_ref": "lua_benchmark_tasks_100_txt:056"
+    },
+    {
+      "id": "lua100-task-057",
+      "title": "Найди первый непустой code в массиве codes.",
+      "category": "извлечение данных",
+      "prompt": "Найди первый непустой code в массиве codes.",
+      "context": {
+        "wf": {
+          "vars": {
+            "codes": [
+              "",
+              null,
+              "ABC-77",
+              "XYZ-99"
+            ]
+          }
+        }
+      },
+      "archetype": "simple_extraction",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "for _, code in ipairs(wf.vars.codes) do\n  if code ~= nil and code ~= \"\" then\n    return code\n  end\nend\nreturn nil"
+      },
+      "input_roots": [
+        "wf.vars.codes"
+      ],
+      "risk_tags": [
+        "nil_handling",
+        "empty_value_filtering"
+      ],
+      "expected_return_description": "Строку.",
+      "source_ref": "lua_benchmark_tasks_100_txt:057"
+    },
+    {
+      "id": "lua100-task-058",
+      "title": "Посчитай количество попыток до первого успешного результата включительно.",
+      "category": "массивы и логика",
+      "prompt": "Посчитай количество попыток до первого успешного результата включительно.",
+      "context": {
+        "wf": {
+          "vars": {
+            "attempts": [
+              {
+                "success": false
+              },
+              {
+                "success": false
+              },
+              {
+                "success": true
+              },
+              {
+                "success": true
+              }
+            ]
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local count = 0\nfor _, attempt in ipairs(wf.vars.attempts) do\n  count = count + 1\n  if attempt.success == true then\n    return count\n  end\nend\nreturn count"
+      },
+      "input_roots": [
+        "wf.vars.attempts"
+      ],
+      "risk_tags": [
+        "numeric_transform"
+      ],
+      "expected_return_description": "Число 3 для этого примера.",
+      "source_ref": "lua_benchmark_tasks_100_txt:058"
+    },
+    {
+      "id": "lua100-task-059",
+      "title": "Найди индекс первой проверки, у которой passed = false.",
+      "category": "поиск индекса",
+      "prompt": "Найди индекс первой проверки, у которой passed = false.",
+      "context": {
+        "wf": {
+          "vars": {
+            "checks": [
+              {
+                "passed": true
+              },
+              {
+                "passed": true
+              },
+              {
+                "passed": false
+              },
+              {
+                "passed": false
+              }
+            ]
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "for index, check in ipairs(wf.vars.checks) do\n  if check.passed == false then\n    return index\n  end\nend\nreturn nil"
+      },
+      "input_roots": [
+        "wf.vars.checks"
+      ],
+      "risk_tags": [
+        "nil_handling"
+      ],
+      "expected_return_description": "Число индекса для Lua-массива.",
+      "source_ref": "lua_benchmark_tasks_100_txt:059"
+    },
+    {
+      "id": "lua100-task-060",
+      "title": "Проверь, есть ли в массиве items товар с sku = targetSku.",
+      "category": "поиск в массиве",
+      "prompt": "Проверь, есть ли в массиве items товар с sku = targetSku.",
+      "context": {
+        "wf": {
+          "vars": {
+            "targetSku": "B2",
+            "items": [
+              {
+                "sku": "A1"
+              },
+              {
+                "sku": "B2"
+              },
+              {
+                "sku": "C3"
+              }
+            ]
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "for _, item in ipairs(wf.vars.items) do\n  if item.sku == wf.vars.targetSku then\n    return true\n  end\nend\nreturn false"
+      },
+      "input_roots": [
+        "wf.vars.items",
+        "wf.vars.targetSku"
+      ],
+      "risk_tags": [],
+      "expected_return_description": "Boolean.",
+      "source_ref": "lua_benchmark_tasks_100_txt:060"
+    },
+    {
+      "id": "lua100-task-061",
+      "title": "Преобразуй amount у каждой транзакции из строки в число и посчитай общую сумму.",
+      "category": "числа и массивы",
+      "prompt": "Преобразуй amount у каждой транзакции из строки в число и посчитай общую сумму.",
+      "context": {
+        "wf": {
+          "vars": {
+            "transactions": [
+              {
+                "amount": "10.5"
+              },
+              {
+                "amount": "4"
+              },
+              {
+                "amount": "2.25"
+              }
+            ]
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local total = 0\nfor _, transaction in ipairs(wf.vars.transactions) do\n  transaction.amount = tonumber(transaction.amount)\n  total = total + transaction.amount\nend\nreturn total"
+      },
+      "input_roots": [
+        "wf.vars.transactions"
+      ],
+      "risk_tags": [
+        "numeric_transform"
+      ],
+      "expected_return_description": "Число total.",
+      "source_ref": "lua_benchmark_tasks_100_txt:061"
+    },
+    {
+      "id": "lua100-task-062",
+      "title": "Оставь только сессии, у которых durationMinutes больше 30.",
+      "category": "фильтрация массива",
+      "prompt": "Оставь только сессии, у которых durationMinutes больше 30.",
+      "context": {
+        "wf": {
+          "vars": {
+            "sessions": [
+              {
+                "id": "S1",
+                "durationMinutes": 15
+              },
+              {
+                "id": "S2",
+                "durationMinutes": 45
+              },
+              {
+                "id": "S3",
+                "durationMinutes": 31
+              }
+            ]
+          }
+        }
+      },
+      "archetype": "filtering",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local result = _utils.array.new()\nfor _, session in ipairs(wf.vars.sessions) do\n  if session.durationMinutes > 30 then\n    table.insert(result, session)\n  end\nend\nreturn result"
+      },
+      "input_roots": [
+        "wf.vars.sessions"
+      ],
+      "risk_tags": [
+        "array_allocation"
+      ],
+      "expected_return_description": "Массив сессий.",
+      "source_ref": "lua_benchmark_tasks_100_txt:062"
+    },
+    {
+      "id": "lua100-task-063",
+      "title": "Найди самую позднюю дату в массиве dates.",
+      "category": "поиск максимальной даты",
+      "prompt": "Найди самую позднюю дату в массиве dates.",
+      "context": {
+        "wf": {
+          "vars": {
+            "dates": [
+              "2026-04-01",
+              "2026-04-07",
+              "2026-03-30"
+            ]
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local latest = nil\nfor _, date in ipairs(wf.vars.dates) do\n  if latest == nil or date > latest then\n    latest = date\n  end\nend\nreturn latest"
+      },
+      "input_roots": [
+        "wf.vars.dates"
+      ],
+      "risk_tags": [
+        "nil_handling",
+        "table_mutation"
+      ],
+      "expected_return_description": "Строку с самой поздней датой.",
+      "source_ref": "lua_benchmark_tasks_100_txt:063"
+    },
+    {
+      "id": "lua100-task-064",
+      "title": "Найди самое раннее время start в массиве schedule.",
+      "category": "поиск минимального времени",
+      "prompt": "Найди самое раннее время start в массиве schedule.",
+      "context": {
+        "wf": {
+          "vars": {
+            "schedule": [
+              {
+                "start": "18:30"
+              },
+              {
+                "start": "09:15"
+              },
+              {
+                "start": "12:00"
+              }
+            ]
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local earliest = nil\nfor _, entry in ipairs(wf.vars.schedule) do\n  if earliest == nil or entry.start < earliest then\n    earliest = entry.start\n  end\nend\nreturn earliest"
+      },
+      "input_roots": [
+        "wf.vars.schedule"
+      ],
+      "risk_tags": [
+        "nil_handling",
+        "table_mutation"
+      ],
+      "expected_return_description": "Строку с самым ранним временем.",
+      "source_ref": "lua_benchmark_tasks_100_txt:064"
+    },
+    {
+      "id": "lua100-task-065",
+      "title": "Раздели fullName на firstName и lastName по первому пробелу.",
+      "category": "строки",
+      "prompt": "Раздели fullName на firstName и lastName по первому пробелу.",
+      "context": {
+        "wf": {
+          "vars": {
+            "fullName": "Ivan Petrov"
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local firstName, lastName = string.match(wf.vars.fullName, \"^([^%s]+)%s*(.*)$\")\nreturn {\n  firstName = firstName,\n  lastName = lastName\n}"
+      },
+      "input_roots": [
+        "wf.vars.fullName"
+      ],
+      "risk_tags": [],
+      "expected_return_description": "Объект с полями firstName и lastName.",
+      "source_ref": "lua_benchmark_tasks_100_txt:065"
+    },
+    {
+      "id": "lua100-task-066",
+      "title": "Замаскируй номер карты, оставив только последние 4 цифры.",
+      "category": "маскирование",
+      "prompt": "Замаскируй номер карты, оставив только последние 4 цифры.",
+      "context": {
+        "wf": {
+          "vars": {
+            "cardNumber": "4111111111111234"
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local cardNumber = wf.vars.cardNumber\nreturn string.rep(\"*\", #cardNumber - 4) .. string.sub(cardNumber, -4)"
+      },
+      "input_roots": [
+        "wf.vars.cardNumber"
+      ],
+      "risk_tags": [
+        "substring_bounds",
+        "numeric_transform"
+      ],
+      "expected_return_description": "Строку вида ************1234.",
+      "source_ref": "lua_benchmark_tasks_100_txt:066"
+    },
+    {
+      "id": "lua100-task-067",
+      "title": "Из email получи домен после символа @.",
+      "category": "строки",
+      "prompt": "Из email получи домен после символа @.",
+      "context": {
+        "wf": {
+          "vars": {
+            "email": "support@example.org"
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "return string.match(wf.vars.email, \"@(.+)$\")"
+      },
+      "input_roots": [
+        "wf.vars.email"
+      ],
+      "risk_tags": [],
+      "expected_return_description": "Строку домена.",
+      "source_ref": "lua_benchmark_tasks_100_txt:067"
+    },
+    {
+      "id": "lua100-task-068",
+      "title": "Проверь, есть ли в payload поле error.code.",
+      "category": "проверка вложенности",
+      "prompt": "Проверь, есть ли в payload поле error.code.",
+      "context": {
+        "wf": {
+          "vars": {
+            "payload": {
+              "error": {
+                "code": "E42",
+                "message": "invalid"
+              }
+            }
+          }
+        }
+      },
+      "archetype": "simple_extraction",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "return wf.vars.payload ~= nil and wf.vars.payload.error ~= nil and wf.vars.payload.error.code ~= nil"
+      },
+      "input_roots": [
+        "wf.vars.payload",
+        "wf.vars.payload.error",
+        "wf.vars.payload.error.code"
+      ],
+      "risk_tags": [
+        "nil_handling"
+      ],
+      "expected_return_description": "Boolean.",
+      "source_ref": "lua_benchmark_tasks_100_txt:068"
+    },
+    {
+      "id": "lua100-task-069",
+      "title": "Посчитай общее количество items во всех packages.",
+      "category": "вложенные массивы",
+      "prompt": "Посчитай общее количество items во всех packages.",
+      "context": {
+        "wf": {
+          "vars": {
+            "packages": [
+              {
+                "items": [
+                  {
+                    "sku": "A"
+                  },
+                  {
+                    "sku": "B"
+                  }
+                ]
+              },
+              {
+                "items": [
+                  {
+                    "sku": "C"
+                  }
+                ]
+              },
+              {
+                "items": []
+              }
+            ]
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local total = 0\nfor _, package in ipairs(wf.vars.packages) do\n  total = total + #package.items\nend\nreturn total"
+      },
+      "input_roots": [
+        "wf.vars.packages"
+      ],
+      "risk_tags": [
+        "numeric_transform"
+      ],
+      "expected_return_description": "Число.",
+      "source_ref": "lua_benchmark_tasks_100_txt:069"
+    },
+    {
+      "id": "lua100-task-070",
+      "title": "Верни массив номеров packages, где есть хотя бы один item с quantity больше 5.",
+      "category": "фильтрация по вложенному условию",
+      "prompt": "Верни массив номеров packages, где есть хотя бы один item с quantity больше 5.",
+      "context": {
+        "wf": {
+          "vars": {
+            "packages": [
+              {
+                "number": "P1",
+                "items": [
+                  {
+                    "sku": "A",
+                    "quantity": 2
+                  }
+                ]
+              },
+              {
+                "number": "P2",
+                "items": [
+                  {
+                    "sku": "B",
+                    "quantity": 7
+                  }
+                ]
+              },
+              {
+                "number": "P3",
+                "items": [
+                  {
+                    "sku": "C",
+                    "quantity": 4
+                  },
+                  {
+                    "sku": "D",
+                    "quantity": 9
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "archetype": "filtering",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local result = _utils.array.new()\nfor _, package in ipairs(wf.vars.packages) do\n  for _, item in ipairs(package.items) do\n    if item.quantity > 5 then\n      table.insert(result, package.number)\n      break\n    end\n  end\nend\nreturn result"
+      },
+      "input_roots": [
+        "wf.vars.packages"
+      ],
+      "risk_tags": [
+        "array_allocation"
+      ],
+      "expected_return_description": "Массив строк с номерами packages.",
+      "source_ref": "lua_benchmark_tasks_100_txt:070"
+    },
+    {
+      "id": "lua100-task-071",
+      "title": "Для каждого сотрудника собери initials из firstName и lastName.",
+      "category": "строки",
+      "prompt": "Для каждого сотрудника собери initials из firstName и lastName.",
+      "context": {
+        "wf": {
+          "vars": {
+            "employees": [
+              {
+                "firstName": "Ivan",
+                "lastName": "Petrov"
+              },
+              {
+                "firstName": "Anna",
+                "lastName": "Sidorova"
+              }
+            ]
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local employees = wf.vars.employees\nfor _, employee in ipairs(employees) do\n  local firstInitial = string.sub(employee.firstName, 1, 1)\n  local lastInitial = string.sub(employee.lastName, 1, 1)\n  employee.initials = string.upper(firstInitial .. lastInitial)\nend\nreturn employees"
+      },
+      "input_roots": [
+        "wf.vars.employees"
+      ],
+      "risk_tags": [
+        "substring_bounds"
+      ],
+      "expected_return_description": "Массив сотрудников с новым полем initials.",
+      "source_ref": "lua_benchmark_tasks_100_txt:071"
+    },
+    {
+      "id": "lua100-task-072",
+      "title": "В каждой строке row замени запятую в поле price на точку и преобразуй в число.",
+      "category": "нормализация чисел",
+      "prompt": "В каждой строке row замени запятую в поле price на точку и преобразуй в число.",
+      "context": {
+        "wf": {
+          "vars": {
+            "rows": [
+              {
+                "price": "10,5"
+              },
+              {
+                "price": "7,00"
+              },
+              {
+                "price": "99,99"
+              }
+            ]
+          }
+        }
+      },
+      "archetype": "normalization",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local rows = wf.vars.rows\nfor _, row in ipairs(rows) do\n  row.price = tonumber(string.gsub(row.price, \",\", \".\"))\nend\nreturn rows"
+      },
+      "input_roots": [
+        "wf.vars.rows"
+      ],
+      "risk_tags": [
+        "numeric_transform"
+      ],
+      "expected_return_description": "Массив rows с price как number.",
+      "source_ref": "lua_benchmark_tasks_100_txt:072"
+    },
+    {
+      "id": "lua100-task-073",
+      "title": "Удали дубли по email без учёта регистра букв.",
+      "category": "уникализация",
+      "prompt": "Удали дубли по email без учёта регистра букв.",
+      "context": {
+        "wf": {
+          "vars": {
+            "contacts": [
+              {
+                "email": "A@example.com"
+              },
+              {
+                "email": "b@example.com"
+              },
+              {
+                "email": "a@example.com"
+              }
+            ]
+          }
+        }
+      },
+      "archetype": "filtering",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local result = _utils.array.new()\nlocal seen = {}\nfor _, contact in ipairs(wf.vars.contacts) do\n  local emailKey = string.lower(contact.email)\n  if not seen[emailKey] then\n    seen[emailKey] = true\n    table.insert(result, contact)\n  end\nend\nreturn result"
+      },
+      "input_roots": [
+        "wf.vars.contacts"
+      ],
+      "risk_tags": [
+        "array_allocation"
+      ],
+      "expected_return_description": "Массив контактов без дубликатов.",
+      "source_ref": "lua_benchmark_tasks_100_txt:073"
+    },
+    {
+      "id": "lua100-task-074",
+      "title": "Собери объект, в котором ключ — status, а значение — количество записей с этим статусом.",
+      "category": "агрегирование",
+      "prompt": "Собери объект, в котором ключ — status, а значение — количество записей с этим статусом.",
+      "context": {
+        "wf": {
+          "vars": {
+            "orders": [
+              {
+                "status": "NEW"
+              },
+              {
+                "status": "PAID"
+              },
+              {
+                "status": "NEW"
+              },
+              {
+                "status": "PAID"
+              },
+              {
+                "status": "CANCELLED"
+              }
+            ]
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local result = {}\nfor _, order in ipairs(wf.vars.orders) do\n  result[order.status] = (result[order.status] or 0) + 1\nend\nreturn result"
+      },
+      "input_roots": [
+        "wf.vars.orders"
+      ],
+      "risk_tags": [
+        "numeric_transform"
+      ],
+      "expected_return_description": "Объект вида {NEW=2, PAID=2, CANCELLED=1}.",
+      "source_ref": "lua_benchmark_tasks_100_txt:074"
+    },
+    {
+      "id": "lua100-task-075",
+      "title": "Оставь только заказы, созданные today.",
+      "category": "фильтрация по дате",
+      "prompt": "Оставь только заказы, созданные today.",
+      "context": {
+        "wf": {
+          "vars": {
+            "orders": [
+              {
+                "id": "O1",
+                "createdDate": "2026-04-12"
+              },
+              {
+                "id": "O2",
+                "createdDate": "2026-04-11"
+              },
+              {
+                "id": "O3",
+                "createdDate": "2026-04-12"
+              }
+            ]
+          },
+          "initVariables": {
+            "today": "2026-04-12"
+          }
+        }
+      },
+      "archetype": "filtering",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local result = _utils.array.new()\nfor _, order in ipairs(wf.vars.orders) do\n  if order.createdDate == wf.initVariables.today then\n    table.insert(result, order)\n  end\nend\nreturn result"
+      },
+      "input_roots": [
+        "wf.vars.orders",
+        "wf.initVariables.today"
+      ],
+      "risk_tags": [
+        "array_allocation",
+        "init_variables"
+      ],
+      "expected_return_description": "Массив заказов.",
+      "source_ref": "lua_benchmark_tasks_100_txt:075"
+    },
+    {
+      "id": "lua100-task-076",
+      "title": "Собери массив phonesNormalized, где каждый phone преобразован в строку только из цифр.",
+      "category": "строки и массивы",
+      "prompt": "Собери массив phonesNormalized, где каждый phone преобразован в строку только из цифр.",
+      "context": {
+        "wf": {
+          "vars": {
+            "phones": [
+              "+7 (900) 111-22-33",
+              "8-901-555-66-77",
+              "(495) 123 45 67"
+            ]
+          }
+        }
+      },
+      "archetype": "filtering",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local result = _utils.array.new()\nfor _, phone in ipairs(wf.vars.phones) do\n  table.insert(result, string.gsub(phone, \"[^%d]\", \"\"))\nend\nreturn result"
+      },
+      "input_roots": [
+        "wf.vars.phones"
+      ],
+      "risk_tags": [
+        "array_allocation",
+        "empty_value_filtering"
+      ],
+      "expected_return_description": "Массив строк.",
+      "source_ref": "lua_benchmark_tasks_100_txt:076"
+    },
+    {
+      "id": "lua100-task-077",
+      "title": "Оставь только invoices, у которых total попадает в диапазон от minTotal до maxTotal.",
+      "category": "фильтрация по диапазону",
+      "prompt": "Оставь только invoices, у которых total попадает в диапазон от minTotal до maxTotal.",
+      "context": {
+        "wf": {
+          "vars": {
+            "invoices": [
+              {
+                "id": "I1",
+                "total": 500
+              },
+              {
+                "id": "I2",
+                "total": 1500
+              },
+              {
+                "id": "I3",
+                "total": 2500
+              }
+            ]
+          },
+          "initVariables": {
+            "minTotal": 1000,
+            "maxTotal": 2000
+          }
+        }
+      },
+      "archetype": "filtering",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local result = _utils.array.new()\nlocal minTotal = wf.initVariables.minTotal\nlocal maxTotal = wf.initVariables.maxTotal\nfor _, invoice in ipairs(wf.vars.invoices) do\n  if invoice.total >= minTotal and invoice.total <= maxTotal then\n    table.insert(result, invoice)\n  end\nend\nreturn result"
+      },
+      "input_roots": [
+        "wf.initVariables.minTotal",
+        "wf.initVariables.maxTotal",
+        "wf.vars.invoices"
+      ],
+      "risk_tags": [
+        "array_allocation",
+        "init_variables"
+      ],
+      "expected_return_description": "Массив invoices.",
+      "source_ref": "lua_benchmark_tasks_100_txt:077"
+    },
+    {
+      "id": "lua100-task-078",
+      "title": "Для каждого продукта добавь поле inStockLabel со значением \"yes\" или \"no\" в зависимости от stock.",
+      "category": "обогащение данных",
+      "prompt": "Для каждого продукта добавь поле inStockLabel со значением \"yes\" или \"no\" в зависимости от stock.",
+      "context": {
+        "wf": {
+          "vars": {
+            "products": [
+              {
+                "sku": "A",
+                "stock": 0
+              },
+              {
+                "sku": "B",
+                "stock": 5
+              }
+            ]
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local products = wf.vars.products\nfor _, product in ipairs(products) do\n  product.inStockLabel = product.stock > 0 and \"yes\" or \"no\"\nend\nreturn products"
+      },
+      "input_roots": [
+        "wf.vars.products"
+      ],
+      "risk_tags": [],
+      "expected_return_description": "Массив продуктов с новым полем.",
+      "source_ref": "lua_benchmark_tasks_100_txt:078"
+    },
+    {
+      "id": "lua100-task-079",
+      "title": "Построй slug из title: переведи в нижний регистр и замени пробелы на дефисы.",
+      "category": "строки",
+      "prompt": "Построй slug из title: переведи в нижний регистр и замени пробелы на дефисы.",
+      "context": {
+        "wf": {
+          "vars": {
+            "title": "Big Summer Sale"
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local slug = string.lower(wf.vars.title)\nslug = string.match(slug, \"^%s*(.-)%s*$\")\nslug = string.gsub(slug, \"%s+\", \"-\")\nreturn slug"
+      },
+      "input_roots": [
+        "wf.vars.title"
+      ],
+      "risk_tags": [],
+      "expected_return_description": "Строку slug.",
+      "source_ref": "lua_benchmark_tasks_100_txt:079"
+    },
+    {
+      "id": "lua100-task-080",
+      "title": "Из filename получи расширение файла без точки.",
+      "category": "строки",
+      "prompt": "Из filename получи расширение файла без точки.",
+      "context": {
+        "wf": {
+          "vars": {
+            "filename": "report.final.pdf"
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "return string.match(wf.vars.filename, \"%.([^%.]+)$\")"
+      },
+      "input_roots": [
+        "wf.vars.filename"
+      ],
+      "risk_tags": [],
+      "expected_return_description": "Строку \"pdf\".",
+      "source_ref": "lua_benchmark_tasks_100_txt:080"
+    },
+    {
+      "id": "lua100-task-081",
+      "title": "Оставь в socialLinks только непустые ссылки.",
+      "category": "очистка объекта",
+      "prompt": "Оставь в socialLinks только непустые ссылки.",
+      "context": {
+        "wf": {
+          "vars": {
+            "socialLinks": {
+              "telegram": "https://t.me/example",
+              "vk": "",
+              "site": "https://example.com",
+              "youtube": null
+            }
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local result = {}\nfor key, value in pairs(wf.vars.socialLinks) do\n  if value ~= nil and value ~= \"\" then\n    result[key] = value\n  end\nend\nreturn result"
+      },
+      "input_roots": [
+        "wf.vars.socialLinks"
+      ],
+      "risk_tags": [
+        "nil_handling",
+        "empty_value_filtering"
+      ],
+      "expected_return_description": "Очищенный объект.",
+      "source_ref": "lua_benchmark_tasks_100_txt:081"
+    },
+    {
+      "id": "lua100-task-082",
+      "title": "Преобразуй durationMs в секунды.",
+      "category": "преобразование чисел",
+      "prompt": "Преобразуй durationMs в секунды.",
+      "context": {
+        "wf": {
+          "vars": {
+            "durationMs": 12500
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "return wf.vars.durationMs / 1000"
+      },
+      "input_roots": [
+        "wf.vars.durationMs"
+      ],
+      "risk_tags": [
+        "numeric_transform"
+      ],
+      "expected_return_description": "Число секунд.",
+      "source_ref": "lua_benchmark_tasks_100_txt:082"
+    },
+    {
+      "id": "lua100-task-083",
+      "title": "Проверь, есть ли хотя бы один пользователь с ролью \"admin\".",
+      "category": "логическая проверка",
+      "prompt": "Проверь, есть ли хотя бы один пользователь с ролью \"admin\".",
+      "context": {
+        "wf": {
+          "vars": {
+            "users": [
+              {
+                "name": "Ann",
+                "role": "viewer"
+              },
+              {
+                "name": "Bob",
+                "role": "editor"
+              },
+              {
+                "name": "Chris",
+                "role": "admin"
+              }
+            ]
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "for _, user in ipairs(wf.vars.users) do\n  if user.role == \"admin\" then\n    return true\n  end\nend\nreturn false"
+      },
+      "input_roots": [
+        "wf.vars.users"
+      ],
+      "risk_tags": [],
+      "expected_return_description": "Boolean.",
+      "source_ref": "lua_benchmark_tasks_100_txt:083"
+    },
+    {
+      "id": "lua100-task-084",
+      "title": "Проверь, что нет ни одной задачи, у которой done равно false.",
+      "category": "логическая проверка",
+      "prompt": "Проверь, что нет ни одной задачи, у которой done равно false.",
+      "context": {
+        "wf": {
+          "vars": {
+            "tasks": [
+              {
+                "id": 1,
+                "done": true
+              },
+              {
+                "id": 2,
+                "done": true
+              },
+              {
+                "id": 3,
+                "done": false
+              }
+            ]
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "for _, task in ipairs(wf.vars.tasks) do\n  if task.done == false then\n    return false\n  end\nend\nreturn true"
+      },
+      "input_roots": [
+        "wf.vars.tasks"
+      ],
+      "risk_tags": [],
+      "expected_return_description": "Boolean.",
+      "source_ref": "lua_benchmark_tasks_100_txt:084"
+    },
+    {
+      "id": "lua100-task-085",
+      "title": "Lua task 085",
+      "category": "выбор значения по приоритету",
+      "prompt": "Для каждого лида выбери первое непустое значение из utm_source, source и referrer и сохрани в поле actualSource.",
+      "context": {
+        "wf": {
+          "vars": {
+            "leads": [
+              {
+                "utm_source": "",
+                "source": "form",
+                "referrer": ""
+              },
+              {
+                "utm_source": "google",
+                "source": "",
+                "referrer": "ads"
+              },
+              {
+                "utm_source": null,
+                "source": "",
+                "referrer": "partner"
+              }
+            ]
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local leads = wf.vars.leads\nfor _, lead in ipairs(leads) do\n  if lead.utm_source ~= nil and lead.utm_source ~= \"\" then\n    lead.actualSource = lead.utm_source\n  elseif lead.source ~= nil and lead.source ~= \"\" then\n    lead.actualSource = lead.source\n  else\n    lead.actualSource = lead.referrer\n  end\nend\nreturn leads"
+      },
+      "input_roots": [
+        "wf.vars.leads"
+      ],
+      "risk_tags": [
+        "nil_handling",
+        "empty_value_filtering"
+      ],
+      "expected_return_description": "Массив лидов с новым полем actualSource.",
+      "source_ref": "lua_benchmark_tasks_100_txt:085"
+    },
+    {
+      "id": "lua100-task-086",
+      "title": "Собери один массив всех text из comments у всех tickets.",
+      "category": "разворачивание вложенности",
+      "prompt": "Собери один массив всех text из comments у всех tickets.",
+      "context": {
+        "wf": {
+          "vars": {
+            "tickets": [
+              {
+                "id": "T1",
+                "comments": [
+                  {
+                    "text": "a"
+                  },
+                  {
+                    "text": "b"
+                  }
+                ]
+              },
+              {
+                "id": "T2",
+                "comments": [
+                  {
+                    "text": "c"
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "archetype": "filtering",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local result = _utils.array.new()\nfor _, ticket in ipairs(wf.vars.tickets) do\n  for _, comment in ipairs(ticket.comments) do\n    table.insert(result, comment.text)\n  end\nend\nreturn result"
+      },
+      "input_roots": [
+        "wf.vars.tickets"
+      ],
+      "risk_tags": [
+        "array_allocation"
+      ],
+      "expected_return_description": "Массив строк.",
+      "source_ref": "lua_benchmark_tasks_100_txt:086"
+    },
+    {
+      "id": "lua100-task-087",
+      "title": "Из массива orders собери новый массив объектов только с полями id и total.",
+      "category": "проекция массива",
+      "prompt": "Из массива orders собери новый массив объектов только с полями id и total.",
+      "context": {
+        "wf": {
+          "vars": {
+            "orders": [
+              {
+                "id": "O1",
+                "total": 100,
+                "status": "NEW"
+              },
+              {
+                "id": "O2",
+                "total": 250,
+                "status": "PAID"
+              }
+            ]
+          }
+        }
+      },
+      "archetype": "filtering",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local result = _utils.array.new()\nfor _, order in ipairs(wf.vars.orders) do\n  table.insert(result, {\n    id = order.id,\n    total = order.total\n  })\nend\nreturn result"
+      },
+      "input_roots": [
+        "wf.vars.orders"
+      ],
+      "risk_tags": [
+        "array_allocation"
+      ],
+      "expected_return_description": "Массив объектов упрощённой структуры.",
+      "source_ref": "lua_benchmark_tasks_100_txt:087"
+    },
+    {
+      "id": "lua100-task-088",
+      "title": "Для каждого package посчитай volume как length * width * height.",
+      "category": "вычисления",
+      "prompt": "Для каждого package посчитай volume как length * width * height.",
+      "context": {
+        "wf": {
+          "vars": {
+            "packages": [
+              {
+                "number": "P1",
+                "length": 2,
+                "width": 3,
+                "height": 4
+              },
+              {
+                "number": "P2",
+                "length": 1.5,
+                "width": 2,
+                "height": 5
+              }
+            ]
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local packages = wf.vars.packages\nfor _, package in ipairs(packages) do\n  package.volume = package.length * package.width * package.height\nend\nreturn packages"
+      },
+      "input_roots": [
+        "wf.vars.packages"
+      ],
+      "risk_tags": [
+        "numeric_transform"
+      ],
+      "expected_return_description": "Массив packages с новым полем volume.",
+      "source_ref": "lua_benchmark_tasks_100_txt:088"
+    },
+    {
+      "id": "lua100-task-089",
+      "title": "Оставь только пользователей, у которых месяц рождения совпадает с currentMonth.",
+      "category": "фильтрация по месяцу",
+      "prompt": "Оставь только пользователей, у которых месяц рождения совпадает с currentMonth.",
+      "context": {
+        "wf": {
+          "vars": {
+            "users": [
+              {
+                "name": "Ann",
+                "birthday": "1999-04-15"
+              },
+              {
+                "name": "Bob",
+                "birthday": "2001-07-09"
+              },
+              {
+                "name": "Chris",
+                "birthday": "1995-04-01"
+              }
+            ]
+          },
+          "initVariables": {
+            "currentMonth": "04"
+          }
+        }
+      },
+      "archetype": "filtering",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local result = _utils.array.new()\nfor _, user in ipairs(wf.vars.users) do\n  local month = string.match(user.birthday, \"^%d%d%d%d%-(%d%d)%-%d%d$\")\n  if month == wf.initVariables.currentMonth then\n    table.insert(result, user)\n  end\nend\nreturn result"
+      },
+      "input_roots": [
+        "wf.vars.users",
+        "wf.initVariables.currentMonth"
+      ],
+      "risk_tags": [
+        "array_allocation",
+        "init_variables"
+      ],
+      "expected_return_description": "Массив пользователей.",
+      "source_ref": "lua_benchmark_tasks_100_txt:089"
+    },
+    {
+      "id": "lua100-task-090",
+      "title": "Для каждого телефона в phones верни только последние 4 цифры.",
+      "category": "строки",
+      "prompt": "Для каждого телефона в phones верни только последние 4 цифры.",
+      "context": {
+        "wf": {
+          "vars": {
+            "phones": [
+              "79991234567",
+              "78005553535",
+              "74951234567"
+            ]
+          }
+        }
+      },
+      "archetype": "filtering",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local result = _utils.array.new()\nfor _, phone in ipairs(wf.vars.phones) do\n  table.insert(result, string.sub(phone, -4))\nend\nreturn result"
+      },
+      "input_roots": [
+        "wf.vars.phones"
+      ],
+      "risk_tags": [
+        "array_allocation",
+        "substring_bounds"
+      ],
+      "expected_return_description": "Массив строк длиной 4 символа.",
+      "source_ref": "lua_benchmark_tasks_100_txt:090"
+    },
+    {
+      "id": "lua100-task-091",
+      "title": "Посчитай сумму значений в первом столбце массива matrix.",
+      "category": "матрицы и массивы",
+      "prompt": "Посчитай сумму значений в первом столбце массива matrix.",
+      "context": {
+        "wf": {
+          "vars": {
+            "matrix": [
+              [
+                1,
+                2,
+                3
+              ],
+              [
+                4,
+                5,
+                6
+              ],
+              [
+                7,
+                8,
+                9
+              ]
+            ]
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local total = 0\nfor _, row in ipairs(wf.vars.matrix) do\n  total = total + row[1]\nend\nreturn total"
+      },
+      "input_roots": [
+        "wf.vars.matrix"
+      ],
+      "risk_tags": [
+        "numeric_transform",
+        "array_indexing",
+        "empty_array"
+      ],
+      "expected_return_description": "Число.",
+      "source_ref": "lua_benchmark_tasks_100_txt:091"
+    },
+    {
+      "id": "lua100-task-092",
+      "title": "Посчитай количество строк, где fieldA является строкой, а fieldB является числом.",
+      "category": "проверка типов",
+      "prompt": "Посчитай количество строк, где fieldA является строкой, а fieldB является числом.",
+      "context": {
+        "wf": {
+          "vars": {
+            "rows": [
+              {
+                "fieldA": "ok",
+                "fieldB": 1
+              },
+              {
+                "fieldA": 22,
+                "fieldB": 1
+              },
+              {
+                "fieldA": "yes",
+                "fieldB": "2"
+              },
+              {
+                "fieldA": "fine",
+                "fieldB": 3
+              }
+            ]
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local count = 0\nfor _, row in ipairs(wf.vars.rows) do\n  if type(row.fieldA) == \"string\" and type(row.fieldB) == \"number\" then\n    count = count + 1\n  end\nend\nreturn count"
+      },
+      "input_roots": [
+        "wf.vars.rows"
+      ],
+      "risk_tags": [
+        "numeric_transform"
+      ],
+      "expected_return_description": "Число.",
+      "source_ref": "lua_benchmark_tasks_100_txt:092"
+    },
+    {
+      "id": "lua100-task-093",
+      "title": "Сделай так, чтобы tags всегда был массивом и при этом был помечен как array для LowCode.",
+      "category": "нормализация массива",
+      "prompt": "Сделай так, чтобы tags всегда был массивом и при этом был помечен как array для LowCode.",
+      "context": {
+        "wf": {
+          "vars": {
+            "tags": {
+              "name": "urgent"
+            }
+          }
+        }
+      },
+      "archetype": "normalization",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local tags = wf.vars.tags\nif type(tags) ~= \"table\" then\n  tags = {tags}\nelse\n  local isArray = true\n  for key, _ in pairs(tags) do\n    if type(key) ~= \"number\" or math.floor(key) ~= key then\n      isArray = false\n      break\n    end\n  end\n  if not isArray then\n    tags = {tags}\n  end\nend\n_utils.array.markAsArray(tags)\nreturn tags"
+      },
+      "input_roots": [
+        "wf.vars.tags"
+      ],
+      "risk_tags": [],
+      "expected_return_description": "Массив, подготовленный для LowCode.",
+      "source_ref": "lua_benchmark_tasks_100_txt:093"
+    },
+    {
+      "id": "lua100-task-094",
+      "title": "Разбери queryString в объект ключ-значение по символам & и =.",
+      "category": "разбор строки",
+      "prompt": "Разбери queryString в объект ключ-значение по символам & и =.",
+      "context": {
+        "wf": {
+          "vars": {
+            "queryString": "a=1&b=hello&c=42"
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local result = {}\nfor pair in string.gmatch(wf.vars.queryString, \"[^&]+\") do\n  local key, value = string.match(pair, \"([^=]+)=(.*)\")\n  result[key] = value\nend\nreturn result"
+      },
+      "input_roots": [
+        "wf.vars.queryString"
+      ],
+      "risk_tags": [],
+      "expected_return_description": "Объект вида {a=\"1\", b=\"hello\", c=\"42\"}.",
+      "source_ref": "lua_benchmark_tasks_100_txt:094"
+    },
+    {
+      "id": "lua100-task-095",
+      "title": "Найди последнее сообщение с уровнем \"ERROR\" и верни его text.",
+      "category": "поиск записи",
+      "prompt": "Найди последнее сообщение с уровнем \"ERROR\" и верни его text.",
+      "context": {
+        "wf": {
+          "vars": {
+            "logs": [
+              {
+                "level": "INFO",
+                "text": "started"
+              },
+              {
+                "level": "ERROR",
+                "text": "first error"
+              },
+              {
+                "level": "WARN",
+                "text": "warning"
+              },
+              {
+                "level": "ERROR",
+                "text": "second error"
+              }
+            ]
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local logs = wf.vars.logs\nfor i = #logs, 1, -1 do\n  if logs[i].level == \"ERROR\" then\n    return logs[i].text\n  end\nend\nreturn nil"
+      },
+      "input_roots": [
+        "wf.vars.logs"
+      ],
+      "risk_tags": [
+        "nil_handling"
+      ],
+      "expected_return_description": "Строку text.",
+      "source_ref": "lua_benchmark_tasks_100_txt:095"
+    },
+    {
+      "id": "lua100-task-096",
+      "title": "Посчитай количество уникальных sku в корзине cartItems.",
+      "category": "агрегирование",
+      "prompt": "Посчитай количество уникальных sku в корзине cartItems.",
+      "context": {
+        "wf": {
+          "vars": {
+            "cartItems": [
+              {
+                "sku": "A1",
+                "qty": 1
+              },
+              {
+                "sku": "B2",
+                "qty": 1
+              },
+              {
+                "sku": "A1",
+                "qty": 3
+              },
+              {
+                "sku": "C3",
+                "qty": 2
+              }
+            ]
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local seen = {}\nlocal count = 0\nfor _, item in ipairs(wf.vars.cartItems) do\n  if not seen[item.sku] then\n    seen[item.sku] = true\n    count = count + 1\n  end\nend\nreturn count"
+      },
+      "input_roots": [
+        "wf.vars.cartItems"
+      ],
+      "risk_tags": [
+        "numeric_transform"
+      ],
+      "expected_return_description": "Число.",
+      "source_ref": "lua_benchmark_tasks_100_txt:096"
+    },
+    {
+      "id": "lua100-task-097",
+      "title": "Для каждого shipment добавь поле delayed = true, если actualDate позже plannedDate.",
+      "category": "сравнение дат",
+      "prompt": "Для каждого shipment добавь поле delayed = true, если actualDate позже plannedDate.",
+      "context": {
+        "wf": {
+          "vars": {
+            "shipments": [
+              {
+                "id": "S1",
+                "plannedDate": "2026-04-10",
+                "actualDate": "2026-04-10"
+              },
+              {
+                "id": "S2",
+                "plannedDate": "2026-04-09",
+                "actualDate": "2026-04-11"
+              }
+            ]
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local shipments = wf.vars.shipments\nfor _, shipment in ipairs(shipments) do\n  shipment.delayed = shipment.actualDate > shipment.plannedDate\nend\nreturn shipments"
+      },
+      "input_roots": [
+        "wf.vars.shipments"
+      ],
+      "risk_tags": [],
+      "expected_return_description": "Массив shipments с новым полем delayed.",
+      "source_ref": "lua_benchmark_tasks_100_txt:097"
+    },
+    {
+      "id": "lua100-task-098",
+      "title": "Верни массив названий обязательных полей, которые отсутствуют или пустые в profile.",
+      "category": "валидация",
+      "prompt": "Верни массив названий обязательных полей, которые отсутствуют или пустые в profile.",
+      "context": {
+        "wf": {
+          "vars": {
+            "profile": {
+              "name": "Alex",
+              "email": "",
+              "phone": null,
+              "city": "Perm"
+            },
+            "requiredFields": [
+              "name",
+              "email",
+              "phone",
+              "city"
+            ]
+          }
+        }
+      },
+      "archetype": "filtering",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local result = _utils.array.new()\nlocal profile = wf.vars.profile\nfor _, fieldName in ipairs(wf.vars.requiredFields) do\n  local value = profile[fieldName]\n  if value == nil or value == \"\" then\n    table.insert(result, fieldName)\n  end\nend\nreturn result"
+      },
+      "input_roots": [
+        "wf.vars.profile",
+        "wf.vars.requiredFields"
+      ],
+      "risk_tags": [
+        "array_allocation",
+        "nil_handling",
+        "empty_value_filtering"
+      ],
+      "expected_return_description": "Массив строк с отсутствующими полями.",
+      "source_ref": "lua_benchmark_tasks_100_txt:098"
+    },
+    {
+      "id": "lua100-task-099",
+      "title": "Собери объект с количеством контактов по городам.",
+      "category": "агрегирование",
+      "prompt": "Собери объект с количеством контактов по городам.",
+      "context": {
+        "wf": {
+          "vars": {
+            "contacts": [
+              {
+                "name": "A",
+                "city": "Москва"
+              },
+              {
+                "name": "B",
+                "city": "Казань"
+              },
+              {
+                "name": "C",
+                "city": "Москва"
+              },
+              {
+                "name": "D",
+                "city": "Самара"
+              }
+            ]
+          }
+        }
+      },
+      "archetype": "transformation",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local result = {}\nfor _, contact in ipairs(wf.vars.contacts) do\n  result[contact.city] = (result[contact.city] or 0) + 1\nend\nreturn result"
+      },
+      "input_roots": [
+        "wf.vars.contacts"
+      ],
+      "risk_tags": [
+        "numeric_transform"
+      ],
+      "expected_return_description": "Объект вида city -> count.",
+      "source_ref": "lua_benchmark_tasks_100_txt:099"
+    },
+    {
+      "id": "lua100-task-100",
+      "title": "Для каждой категории меню верни название первого доступного блюда.",
+      "category": "выбор из вложенных структур",
+      "prompt": "Для каждой категории меню верни название первого доступного блюда.",
+      "context": {
+        "wf": {
+          "vars": {
+            "menu": [
+              {
+                "category": "soups",
+                "items": [
+                  {
+                    "name": "borsch",
+                    "available": false
+                  },
+                  {
+                    "name": "ramen",
+                    "available": true
+                  }
+                ]
+              },
+              {
+                "category": "desserts",
+                "items": [
+                  {
+                    "name": "cake",
+                    "available": true
+                  },
+                  {
+                    "name": "ice cream",
+                    "available": true
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "archetype": "filtering",
+      "allowed_output_modes": [
+        "raw_lua"
+      ],
+      "primary_output_mode": "raw_lua",
+      "expected_outputs": {
+        "raw_lua": "local result = _utils.array.new()\nfor _, category in ipairs(wf.vars.menu) do\n  local firstAvailableName = nil\n  for _, item in ipairs(category.items) do\n    if item.available == true then\n      firstAvailableName = item.name\n      break\n    end\n  end\n  table.insert(result, {\n    category = category.category,\n    firstAvailableName = firstAvailableName\n  })\nend\nreturn result"
+      },
+      "input_roots": [
+        "wf.vars.menu"
+      ],
+      "risk_tags": [
+        "array_allocation",
+        "nil_handling",
+        "table_mutation"
+      ],
+      "expected_return_description": "Массив объектов вида {category, firstAvailableName}.",
+      "source_ref": "lua_benchmark_tasks_100_txt:100"
+    }
+  ]
+}

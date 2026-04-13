@@ -1,0 +1,288 @@
+{
+  "dataset_id": "s7-retrieval-synthetic-cases",
+  "version": "0.1.0",
+  "examples": [
+    {
+      "id": "synthetic-simple-last-phone",
+      "title": "Последний телефон",
+      "task": "Из массива phoneNumbers получи последний номер.",
+      "archetype": "simple_extraction",
+      "allowed_output_modes": ["raw_lua", "json_wrapper"],
+      "primary_output_mode": "raw_lua",
+      "input_roots": ["wf.vars.phoneNumbers"],
+      "risk_tags": ["array_indexing", "empty_array", "json_wrapper"],
+      "source_ref": "synthetic_seed:simple_extraction_01",
+      "expected_outputs": {
+        "raw_lua": "return wf.vars.phoneNumbers[#wf.vars.phoneNumbers]"
+      }
+    },
+    {
+      "id": "synthetic-simple-manager-email",
+      "title": "Email менеджера",
+      "task": "Верни email менеджера из объекта order.",
+      "archetype": "simple_extraction",
+      "allowed_output_modes": ["raw_lua", "json_wrapper"],
+      "primary_output_mode": "raw_lua",
+      "input_roots": ["wf.vars.order.manager.email"],
+      "risk_tags": ["json_wrapper"],
+      "source_ref": "synthetic_seed:simple_extraction_02",
+      "expected_outputs": {
+        "raw_lua": "return wf.vars.order.manager.email"
+      }
+    },
+    {
+      "id": "synthetic-simple-first-sku",
+      "title": "Первый SKU",
+      "task": "Получи sku первого товара в корзине.",
+      "archetype": "simple_extraction",
+      "allowed_output_modes": ["raw_lua", "json_wrapper"],
+      "primary_output_mode": "raw_lua",
+      "input_roots": ["wf.vars.cart"],
+      "risk_tags": ["array_indexing", "empty_array"],
+      "source_ref": "synthetic_seed:simple_extraction_03",
+      "expected_outputs": {
+        "raw_lua": "return wf.vars.cart[1].sku"
+      }
+    },
+    {
+      "id": "synthetic-simple-ticket-status",
+      "title": "Статус тикета",
+      "task": "Верни текущий статус тикета.",
+      "archetype": "simple_extraction",
+      "allowed_output_modes": ["raw_lua", "json_wrapper"],
+      "primary_output_mode": "raw_lua",
+      "input_roots": ["wf.vars.ticket.status"],
+      "risk_tags": [],
+      "source_ref": "synthetic_seed:simple_extraction_04",
+      "expected_outputs": {
+        "raw_lua": "return wf.vars.ticket.status"
+      }
+    },
+    {
+      "id": "synthetic-transformation-add-one-more-attempt",
+      "title": "Плюс одна попытка",
+      "task": "Увеличь значение retryCount на единицу.",
+      "archetype": "transformation",
+      "allowed_output_modes": ["raw_lua", "json_wrapper"],
+      "primary_output_mode": "raw_lua",
+      "input_roots": ["wf.vars.retryCount"],
+      "risk_tags": ["numeric_transform", "wrong_root"],
+      "source_ref": "synthetic_seed:transformation_01",
+      "expected_outputs": {
+        "raw_lua": "return wf.vars.retryCount + 1"
+      }
+    },
+    {
+      "id": "synthetic-transformation-add-vat",
+      "title": "Добавить НДС",
+      "task": "Посчитай итоговую сумму с НДС 20 процентов.",
+      "archetype": "transformation",
+      "allowed_output_modes": ["raw_lua", "json_wrapper"],
+      "primary_output_mode": "raw_lua",
+      "input_roots": ["wf.vars.amount"],
+      "risk_tags": ["numeric_transform"],
+      "source_ref": "synthetic_seed:transformation_02",
+      "expected_outputs": {
+        "raw_lua": "return wf.vars.amount * 1.2"
+      }
+    },
+    {
+      "id": "synthetic-transformation-cleanup-headers",
+      "title": "Оставить нужные заголовки",
+      "task": "Оставь в headers только Authorization и Content-Type.",
+      "archetype": "transformation",
+      "allowed_output_modes": ["raw_lua", "json_wrapper"],
+      "primary_output_mode": "raw_lua",
+      "input_roots": ["wf.vars.headers"],
+      "risk_tags": ["table_mutation", "nil_handling"],
+      "source_ref": "synthetic_seed:transformation_03",
+      "expected_outputs": {
+        "raw_lua": "local headers = wf.vars.headers\nfor key, _ in pairs(headers) do\n  if key ~= \"Authorization\" and key ~= \"Content-Type\" then\n    headers[key] = nil\n  end\nend\n\nreturn headers"
+      }
+    },
+    {
+      "id": "synthetic-transformation-patch-add-total",
+      "title": "Патч с итогом",
+      "task": "Добавь в существующий объект поле total с суммой quantity и price.",
+      "archetype": "transformation",
+      "allowed_output_modes": ["patch_mode"],
+      "primary_output_mode": "patch_mode",
+      "input_roots": ["wf.vars.quantity", "wf.vars.price"],
+      "risk_tags": ["patch_payload", "numeric_transform", "no_full_rewrite"],
+      "source_ref": "synthetic_seed:transformation_04",
+      "expected_outputs": {
+        "patch_mode": {
+          "total": "lua{return wf.vars.quantity * wf.vars.price}lua"
+        }
+      }
+    },
+    {
+      "id": "synthetic-normalization-phones-to-array",
+      "title": "Телефоны в массив",
+      "task": "Сделай так, чтобы phones всегда был массивом.",
+      "archetype": "normalization",
+      "allowed_output_modes": ["raw_lua", "json_wrapper"],
+      "primary_output_mode": "raw_lua",
+      "input_roots": ["wf.vars.customer.phones"],
+      "risk_tags": ["array_semantics", "type_normalization"],
+      "source_ref": "synthetic_seed:normalization_01",
+      "expected_outputs": {
+        "raw_lua": "local phones = wf.vars.customer.phones\nif type(phones) ~= \"table\" then\n  return {phones}\nend\n\nlocal is_array = true\nfor key, _ in pairs(phones) do\n  if type(key) ~= \"number\" then\n    is_array = false\n    break\n  end\nend\n\nreturn is_array and phones or {phones}"
+      }
+    },
+    {
+      "id": "synthetic-normalization-wrap-attachment",
+      "title": "Вложение в массив",
+      "task": "Если attachment не массив, заверни его в массив.",
+      "archetype": "normalization",
+      "allowed_output_modes": ["raw_lua", "json_wrapper"],
+      "primary_output_mode": "raw_lua",
+      "input_roots": ["wf.vars.attachment"],
+      "risk_tags": ["array_semantics", "type_normalization"],
+      "source_ref": "synthetic_seed:normalization_02",
+      "expected_outputs": {
+        "raw_lua": "local attachment = wf.vars.attachment\nif type(attachment) ~= \"table\" then\n  return {attachment}\nend\n\nreturn attachment"
+      }
+    },
+    {
+      "id": "synthetic-normalization-line-items",
+      "title": "Line items как массив",
+      "task": "Нормализуй lineItems так, чтобы это всегда был массив.",
+      "archetype": "normalization",
+      "allowed_output_modes": ["raw_lua", "json_wrapper"],
+      "primary_output_mode": "raw_lua",
+      "input_roots": ["wf.vars.lineItems"],
+      "risk_tags": ["array_semantics", "type_normalization"],
+      "source_ref": "synthetic_seed:normalization_03",
+      "expected_outputs": {
+        "raw_lua": "local items = wf.vars.lineItems\nif type(items) ~= \"table\" then\n  return {items}\nend\n\nfor key, _ in pairs(items) do\n  if type(key) ~= \"number\" then\n    return {items}\n  end\nend\n\nreturn items"
+      }
+    },
+    {
+      "id": "synthetic-normalization-error-list",
+      "title": "Список ошибок",
+      "task": "Сделай так, чтобы errors всегда был массивом записей.",
+      "archetype": "normalization",
+      "allowed_output_modes": ["raw_lua", "json_wrapper"],
+      "primary_output_mode": "raw_lua",
+      "input_roots": ["wf.vars.errors"],
+      "risk_tags": ["array_semantics", "type_normalization", "nil_handling"],
+      "source_ref": "synthetic_seed:normalization_04",
+      "expected_outputs": {
+        "raw_lua": "local errors = wf.vars.errors\nif errors == nil then\n  return {}\nend\nif type(errors) ~= \"table\" then\n  return {errors}\nend\n\nfor key, _ in pairs(errors) do\n  if type(key) ~= \"number\" then\n    return {errors}\n  end\nend\n\nreturn errors"
+      }
+    },
+    {
+      "id": "synthetic-filtering-active-users",
+      "title": "Только активные пользователи",
+      "task": "Оставь только активных пользователей.",
+      "archetype": "filtering",
+      "allowed_output_modes": ["raw_lua", "json_wrapper"],
+      "primary_output_mode": "raw_lua",
+      "input_roots": ["wf.vars.users"],
+      "risk_tags": ["array_allocation", "nil_handling"],
+      "source_ref": "synthetic_seed:filtering_01",
+      "expected_outputs": {
+        "raw_lua": "local result = _utils.array.new()\nfor _, user in ipairs(wf.vars.users) do\n  if user.isActive == true then\n    table.insert(result, user)\n  end\nend\n\nreturn result"
+      }
+    },
+    {
+      "id": "synthetic-filtering-non-empty-email",
+      "title": "Пользователи с email",
+      "task": "Оставь только записи, где email не пустой.",
+      "archetype": "filtering",
+      "allowed_output_modes": ["raw_lua", "json_wrapper"],
+      "primary_output_mode": "raw_lua",
+      "input_roots": ["wf.vars.contacts"],
+      "risk_tags": ["array_allocation", "empty_value_filtering", "nil_handling"],
+      "source_ref": "synthetic_seed:filtering_02",
+      "expected_outputs": {
+        "raw_lua": "local result = _utils.array.new()\nfor _, contact in ipairs(wf.vars.contacts) do\n  if contact.email ~= nil and contact.email ~= \"\" then\n    table.insert(result, contact)\n  end\nend\n\nreturn result"
+      }
+    },
+    {
+      "id": "synthetic-filtering-positive-amount",
+      "title": "Сумма больше нуля",
+      "task": "Отфильтруй только записи, где amount больше нуля.",
+      "archetype": "filtering",
+      "allowed_output_modes": ["raw_lua", "json_wrapper"],
+      "primary_output_mode": "raw_lua",
+      "input_roots": ["wf.vars.orders"],
+      "risk_tags": ["array_allocation", "nil_handling"],
+      "source_ref": "synthetic_seed:filtering_03",
+      "expected_outputs": {
+        "raw_lua": "local result = _utils.array.new()\nfor _, order in ipairs(wf.vars.orders) do\n  if order.amount ~= nil and order.amount > 0 then\n    table.insert(result, order)\n  end\nend\n\nreturn result"
+      }
+    },
+    {
+      "id": "synthetic-filtering-failed-webhooks",
+      "title": "Ошибочные вебхуки",
+      "task": "Оставь только вебхуки со статусом failed.",
+      "archetype": "filtering",
+      "allowed_output_modes": ["raw_lua", "json_wrapper"],
+      "primary_output_mode": "raw_lua",
+      "input_roots": ["wf.vars.webhooks"],
+      "risk_tags": ["array_allocation"],
+      "source_ref": "synthetic_seed:filtering_04",
+      "expected_outputs": {
+        "raw_lua": "local result = _utils.array.new()\nfor _, webhook in ipairs(wf.vars.webhooks) do\n  if webhook.status == \"failed\" then\n    table.insert(result, webhook)\n  end\nend\n\nreturn result"
+      }
+    },
+    {
+      "id": "synthetic-datetime-order-iso",
+      "title": "Дата заказа в ISO",
+      "task": "Собери ORDER_DATE и ORDER_TIME в строку ISO 8601.",
+      "archetype": "datetime_conversion",
+      "allowed_output_modes": ["raw_lua", "json_wrapper"],
+      "primary_output_mode": "raw_lua",
+      "input_roots": ["wf.vars.ORDER_DATE", "wf.vars.ORDER_TIME"],
+      "risk_tags": ["datetime_format", "substring_bounds"],
+      "source_ref": "synthetic_seed:datetime_conversion_01",
+      "expected_outputs": {
+        "raw_lua": "local date = wf.vars.ORDER_DATE\nlocal time = wf.vars.ORDER_TIME\nreturn string.format(\"%s-%s-%sT%s:%s:%s.000000Z\", string.sub(date, 1, 4), string.sub(date, 5, 6), string.sub(date, 7, 8), string.sub(time, 1, 2), string.sub(time, 3, 4), string.sub(time, 5, 6))"
+      }
+    },
+    {
+      "id": "synthetic-datetime-reminder-unix",
+      "title": "Напоминание в unix",
+      "task": "Преобразуй remindAt из initVariables в unix-время.",
+      "archetype": "datetime_conversion",
+      "allowed_output_modes": ["raw_lua", "json_wrapper"],
+      "primary_output_mode": "raw_lua",
+      "input_roots": ["wf.initVariables.remindAt"],
+      "risk_tags": ["datetime_conversion", "init_variables", "timezone_offset"],
+      "source_ref": "synthetic_seed:datetime_conversion_02",
+      "expected_outputs": {
+        "raw_lua": "return parse_iso8601_to_epoch(wf.initVariables.remindAt)"
+      }
+    },
+    {
+      "id": "synthetic-datetime-ship-iso",
+      "title": "Отгрузка в ISO",
+      "task": "Преобразуй shipDate и shipTime в ISO 8601.",
+      "archetype": "datetime_conversion",
+      "allowed_output_modes": ["raw_lua", "json_wrapper"],
+      "primary_output_mode": "raw_lua",
+      "input_roots": ["wf.vars.shipDate", "wf.vars.shipTime"],
+      "risk_tags": ["datetime_format", "substring_bounds"],
+      "source_ref": "synthetic_seed:datetime_conversion_03",
+      "expected_outputs": {
+        "raw_lua": "local date = wf.vars.shipDate\nlocal time = wf.vars.shipTime\nreturn string.format(\"%s-%s-%sT%s:%s:%s.000000Z\", string.sub(date, 1, 4), string.sub(date, 5, 6), string.sub(date, 7, 8), string.sub(time, 1, 2), string.sub(time, 3, 4), string.sub(time, 5, 6))"
+      }
+    },
+    {
+      "id": "synthetic-datetime-completed-at-unix",
+      "title": "completedAt в unix",
+      "task": "Конвертируй completedAt в unix-формат.",
+      "archetype": "datetime_conversion",
+      "allowed_output_modes": ["raw_lua", "json_wrapper"],
+      "primary_output_mode": "raw_lua",
+      "input_roots": ["wf.vars.completedAt"],
+      "risk_tags": ["datetime_conversion", "timezone_offset"],
+      "source_ref": "synthetic_seed:datetime_conversion_04",
+      "expected_outputs": {
+        "raw_lua": "return parse_iso8601_to_epoch(wf.vars.completedAt)"
+      }
+    }
+  ]
+}

@@ -50,12 +50,20 @@ class ValidatorReport:
 class ValidationSnapshot:
     phase: str
     format_report: ValidatorReport
+    syntax_report: ValidatorReport
+    static_report: ValidatorReport
+    principle_report: ValidatorReport
+    semantic_report: ValidatorReport
     rule_report: ValidatorReport
 
     def to_dict(self) -> dict[str, object]:
         return {
             "phase": self.phase,
             "format_report": self.format_report.to_dict(),
+            "syntax_report": self.syntax_report.to_dict(),
+            "static_report": self.static_report.to_dict(),
+            "principle_report": self.principle_report.to_dict(),
+            "semantic_report": self.semantic_report.to_dict(),
             "rule_report": self.rule_report.to_dict(),
         }
 

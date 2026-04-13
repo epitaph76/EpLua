@@ -17,7 +17,8 @@ from packages.orchestrator.domain_adapter import (  # noqa: E402
     normalize_model_output,
 )
 
-_LOCAL_HOSTS = {"127.0.0.1", "localhost"}
+_LOCAL_HOSTS = {"127.0.0.1", "localhost", "ollama", "host.docker.internal"}
+_DEFAULT_REQUEST_TIMEOUT = 180.0
 
 
 class OllamaModelAdapter:
@@ -30,6 +31,7 @@ class OllamaModelAdapter:
     ) -> None:
         self._base_url = (base_url or os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")).rstrip("/")
         self._model = model or os.getenv("OLLAMA_MODEL", "qwen2.5-coder:3b")
+        self._request_timeout = self._load_request_timeout()
         self._http_client = http_client or httpx.Client()
         self._ensure_local_base_url()
 
@@ -73,7 +75,7 @@ class OllamaModelAdapter:
                     "prompt": prompt,
                     "stream": False,
                 },
-                timeout=60.0,
+                timeout=self._request_timeout,
             )
             response.raise_for_status()
             payload = response.json()
@@ -135,6 +137,20 @@ class OllamaModelAdapter:
                 code="configuration_error",
                 message="OLLAMA_BASE_URL must point to a local Ollama instance.",
             )
+
+    def _load_request_timeout(self) -> float:
+        raw_timeout = os.getenv("OLLAMA_REQUEST_TIMEOUT")
+        if raw_timeout is None:
+            return _DEFAULT_REQUEST_TIMEOUT
+
+        try:
+            timeout = float(raw_timeout)
+        except ValueError:
+            return _DEFAULT_REQUEST_TIMEOUT
+
+        if timeout <= 0:
+            return _DEFAULT_REQUEST_TIMEOUT
+        return timeout
 
     def _generate_via_cli(self, prompt: str) -> str:
         try:

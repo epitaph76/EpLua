@@ -1,0 +1,17 @@
+{
+  "archetype": "transformation",
+  "goal": "Локально посчитать или изменить нужное значение без переписывания соседних полей и структур.",
+  "selection_hints": [
+    "Если задача про вычисление одного значения, предпочитай короткое выражение с return.",
+    "Если нужен patch_mode, меняй только добавляемые или обновляемые поля."
+  ],
+  "transformation_rules": [
+    "Не трогай поля, которые не относятся к задаче.",
+    "При изменении таблицы удаляй или меняй только явно перечисленные ключи."
+  ],
+  "preferred_patterns": [
+    "return wf.vars.counter + 1",
+    "local payload = wf.vars.payload\npayload.field = nil\nreturn payload",
+    "{\"newField\":\"lua{return ...}lua\"}"
+  ]
+}

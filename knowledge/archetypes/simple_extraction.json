@@ -1,0 +1,16 @@
+{
+  "archetype": "simple_extraction",
+  "goal": "Read and return a value from a known LocalScript data path with minimal transformation.",
+  "selection_hints": [
+    "Prefer a direct return from the declared input root when no extra transformation is required.",
+    "Keep the Lua fragment minimal and avoid introducing helper functions unless they are needed for safety."
+  ],
+  "transformation_rules": [
+    "Preserve the original data root exactly as provided.",
+    "Add a guard only when the risk tags suggest empty or missing values can break indexing."
+  ],
+  "preferred_patterns": [
+    "return wf.vars.path[#wf.vars.path]",
+    "return wf.vars.path.field"
+  ]
+}

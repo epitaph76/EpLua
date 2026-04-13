@@ -11,6 +11,8 @@ if str(REPO_ROOT) not in sys.path:
 from packages.orchestrator.domain_adapter import build_domain_prompt_package  # noqa: E402
 from packages.validators.core import run_validation_pipeline  # noqa: E402
 
+_SEMANTIC_PASS_RESPONSE = '{"status":"pass","message":"Semantic validation passed."}'
+
 
 class ScriptedModelAdapter:
     def __init__(self, responses_by_case: dict[str, list[str]]) -> None:
@@ -57,7 +59,7 @@ def test_initial_regression_pack_has_non_negative_repair_uplift() -> None:
         )
 
         initial_candidate = scripted_responses[pack_case["case_id"]][0]
-        _, format_report, rule_report = run_validation_pipeline(
+        _, format_report, _, _, _, rule_report = run_validation_pipeline(
             initial_candidate,
             output_mode=prompt_package.output_mode,
             allowed_data_roots=prompt_package.allowed_data_roots,
@@ -98,10 +100,14 @@ def _build_scripted_responses(
             valid_candidate = str(expected_output)
 
         if pack_case["case_id"] == "case-01-last-array-item":
-            scripted_responses[pack_case["case_id"]] = [f"```lua\n{valid_candidate}\n```", valid_candidate]
+            scripted_responses[pack_case["case_id"]] = [
+                f"```lua\n{valid_candidate}\n```",
+                valid_candidate,
+                _SEMANTIC_PASS_RESPONSE,
+            ]
             continue
 
-        scripted_responses[pack_case["case_id"]] = [valid_candidate]
+        scripted_responses[pack_case["case_id"]] = [valid_candidate, _SEMANTIC_PASS_RESPONSE]
     return scripted_responses
 
 

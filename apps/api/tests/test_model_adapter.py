@@ -62,6 +62,7 @@ class UnavailableHttpClient:
 def test_ollama_adapter_calls_local_generate_endpoint(monkeypatch) -> None:
     monkeypatch.setenv("OLLAMA_BASE_URL", "http://localhost:11434")
     monkeypatch.setenv("OLLAMA_MODEL", "qwen2.5-coder:3b")
+    monkeypatch.delenv("OLLAMA_REQUEST_TIMEOUT", raising=False)
 
     http_client = FakeHttpClient()
     adapter = OllamaModelAdapter(http_client=http_client)
@@ -77,7 +78,7 @@ def test_ollama_adapter_calls_local_generate_endpoint(monkeypatch) -> None:
                 "prompt": "make a LocalScript\n\ninventory payload",
                 "stream": False,
             },
-            "timeout": 60.0,
+            "timeout": 180.0,
         }
     ]
 
@@ -85,6 +86,7 @@ def test_ollama_adapter_calls_local_generate_endpoint(monkeypatch) -> None:
 def test_ollama_adapter_defaults_to_loopback_ip_base_url(monkeypatch) -> None:
     monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
     monkeypatch.setenv("OLLAMA_MODEL", "qwen2.5-coder:3b")
+    monkeypatch.delenv("OLLAMA_REQUEST_TIMEOUT", raising=False)
 
     http_client = FakeHttpClient()
     adapter = OllamaModelAdapter(http_client=http_client)
@@ -93,6 +95,33 @@ def test_ollama_adapter_defaults_to_loopback_ip_base_url(monkeypatch) -> None:
 
     assert code == "print('ok')"
     assert http_client.calls[0]["url"] == "http://127.0.0.1:11434/api/generate"
+    assert http_client.calls[0]["timeout"] == 180.0
+
+
+def test_ollama_adapter_allows_docker_service_hostname(monkeypatch) -> None:
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://ollama:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "qwen2.5-coder:3b")
+
+    http_client = FakeHttpClient()
+    adapter = OllamaModelAdapter(http_client=http_client)
+
+    code = adapter.generate("make a LocalScript", "inventory payload")
+
+    assert code == "print('ok')"
+    assert http_client.calls[0]["url"] == "http://ollama:11434/api/generate"
+
+
+def test_ollama_adapter_uses_env_override_for_request_timeout(monkeypatch) -> None:
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "qwen2.5-coder:3b")
+    monkeypatch.setenv("OLLAMA_REQUEST_TIMEOUT", "240")
+
+    http_client = FakeHttpClient()
+    adapter = OllamaModelAdapter(http_client=http_client)
+
+    adapter.generate("make a LocalScript", "inventory payload")
+
+    assert http_client.calls[0]["timeout"] == 240.0
 
 
 def test_ollama_adapter_falls_back_to_local_cli_when_http_api_is_unavailable(monkeypatch) -> None:
@@ -222,6 +251,53 @@ def test_ollama_adapter_normalizes_patch_mode(monkeypatch) -> None:
     prompt = str(http_client.calls[0]["json"]["prompt"])
     assert "Output mode: patch_mode" in prompt
     assert "Return only the fields that need to be added or changed." in prompt
+
+
+def test_ollama_adapter_includes_retrieval_context_in_domain_prompt(monkeypatch) -> None:
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "qwen2.5-coder:3b")
+
+    http_client = RecordingHttpClient("return wf.vars.emails[#wf.vars.emails]")
+    adapter = OllamaModelAdapter(http_client=http_client)
+
+    adapter.generate(
+        "Из полученного списка email получи последний.",
+        '{"wf":{"vars":{"emails":["user1@example.com","user2@example.com"]}}}',
+        archetype="simple_extraction",
+        output_mode="raw_lua",
+        input_roots=["wf.vars.emails"],
+        risk_tags=["array_indexing", "empty_array"],
+    )
+
+    prompt = str(http_client.calls[0]["json"]["prompt"])
+    assert "Retrieved guidance:" in prompt
+    assert "Similar examples:" in prompt
+    assert "case-01-last-array-item" in prompt
+    assert "Archetype template guidance:" in prompt
+    assert "Format/rules pack:" in prompt
+
+
+def test_ollama_adapter_includes_resolved_task_intents_in_domain_prompt(monkeypatch) -> None:
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "qwen2.5-coder:3b")
+
+    http_client = RecordingHttpClient("return wf.vars.RESTbody.result")
+    adapter = OllamaModelAdapter(http_client=http_client)
+
+    adapter.generate(
+        "Очисти значения полей ID, ENTITY_ID и CALL, остальные поля не трогай.",
+        '{"wf":{"vars":{"RESTbody":{"result":[{"ID":"1","ENTITY_ID":"2","CALL":"3","NAME":"Alice"}]}}}}',
+        archetype="transformation",
+        output_mode="raw_lua",
+        input_roots=["wf.vars.RESTbody.result"],
+        risk_tags=["table_mutation", "field_value_clearing", "nil_handling"],
+    )
+
+    prompt = str(http_client.calls[0]["json"]["prompt"])
+    assert "Resolved task intents:" in prompt
+    assert "- clear_target_fields" in prompt
+    assert "- preserve_untouched_fields" in prompt
+    assert "When the task says to clear field values" in prompt
 
 
 def test_public_benchmark_modes_match_expected_output_shapes() -> None:

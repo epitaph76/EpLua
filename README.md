@@ -172,9 +172,32 @@ Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:8011/generate' -ContentTyp
 
 ## Docker и воспроизводимость
 
-Полноценная Docker-first поставка всё ещё относится к этапу `S-10`.
+В репозитории есть ранний Docker-first runtime slice:
 
-Сейчас в репозитории есть [docker/README.md](docker/README.md), но рабочего `docker-compose.yml` для финального локального рантайма ещё нет.
+- [docker-compose.yml](docker-compose.yml) поднимает `ollama`, однократный `ollama-pull` и `api`;
+- [docker/api/Dockerfile](docker/api/Dockerfile) собирает API-образ уже со встроенными `stylua`, `luacheck`, `lua5.4`;
+- локальный `tools/` остаётся только как dev fallback и не нужен для контейнерного запуска.
+
+Быстрый запуск для проверяющих:
+
+```bash
+docker compose up --build
+```
+
+Первый запуск может занять заметное время, потому что сервис `ollama-pull` один раз скачивает выбранную модель в volume.
+
+После старта:
+
+- `Ollama` доступен на `http://localhost:11434`
+- API доступен на `http://localhost:8011`
+
+Модель для контейнера можно переопределить через переменную окружения:
+
+```bash
+OLLAMA_MODEL=qwen2.5-coder:3b docker compose up --build
+```
+
+Это ещё не объявление полного завершения `S-10`, а минимальный воспроизводимый runtime slice для локальной проверки.
 
 ## Что дальше
 

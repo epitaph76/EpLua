@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
 import re
-from typing import Any
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
+from typing import Any, Callable
 
 from packages.shared.quality import ValidationFinding, ValidatorReport
 
@@ -15,6 +20,22 @@ _WF_ROOT_PATTERN = re.compile(r"wf\.(?:vars|initVariables)\.[A-Za-z0-9_\.]+")
 _JSONPATH_PATTERN = re.compile(r"[$@]\.[A-Za-z0-9_.*]+")
 _BLOCK_START_PATTERN = re.compile(r"^\s*(?:local\s+function|function|if\b.*then$|for\b.*do$|while\b.*do$)")
 _BLOCK_END_PATTERN = re.compile(r"^\s*end\s*$")
+_DIRECT_FIELD_ASSIGNMENT_PATTERN = re.compile(
+    r'(?:\[\s*"(?P<bracket>[A-Za-z_][A-Za-z0-9_]*)"\s*\]|\.(?P<dot>[A-Za-z_][A-Za-z0-9_]*))\s*='
+)
+_VALIDATOR_TOOL_TIMEOUT_SECONDS = 15
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_LOCAL_TOOL_PATHS = {
+    "stylua": _REPO_ROOT / "tools" / "stylua" / "stylua.exe",
+    "luacheck": _REPO_ROOT / "tools" / "lua_modules" / "bin" / "luacheck",
+    "lua": _REPO_ROOT / "tools" / "lua" / "bin" / "lua.exe",
+}
+_LOCAL_LUACHECK_CONFIG = _REPO_ROOT / ".luacheckrc"
+_LOCAL_STYLUA_CONFIG = _REPO_ROOT / ".stylua.toml"
+_LOCAL_LUA_SHARE = _REPO_ROOT / "tools" / "lua_modules" / "share" / "lua" / "5.4"
+_LOCAL_LUA_LIB = _REPO_ROOT / "tools" / "lua_modules" / "lib" / "lua" / "5.4"
+_LOCAL_LUA_BIN_DIR = _REPO_ROOT / "tools" / "lua" / "bin"
+_LOCAL_MINGW_BIN_DIR = _REPO_ROOT / "tools" / "mingw" / "mingw64" / "bin"
 
 
 def run_validation_pipeline(
@@ -25,26 +46,36 @@ def run_validation_pipeline(
     forbidden_patterns: tuple[str, ...],
     risk_tags: tuple[str, ...],
     archetype: str,
-) -> tuple[str | None, ValidatorReport, ValidatorReport]:
+) -> tuple[str | None, ValidatorReport, ValidatorReport, ValidatorReport, ValidatorReport, ValidatorReport]:
     format_report = validate_format(candidate, output_mode)
     normalized_candidate = format_report.normalized_candidate
 
     if format_report.status != "pass":
-        return normalized_candidate, format_report, ValidatorReport(
+        skipped_syntax = _skipped_report("syntax_validator", "format_validation_failed")
+        skipped_static = _skipped_report("static_validator", "format_validation_failed")
+        skipped_principle = _skipped_report("principle_validator", "format_validation_failed")
+        return normalized_candidate, format_report, skipped_syntax, skipped_static, skipped_principle, ValidatorReport(
             validator="rule_validator",
             status="skipped",
             skipped_reason="format_validation_failed",
         )
 
-    rule_report = validate_rules(
-        normalized_candidate or candidate.strip(),
+    normalized = normalized_candidate or candidate.strip()
+    syntax_report = validate_syntax(normalized, output_mode=output_mode)
+    static_report = validate_static(
+        normalized,
         output_mode=output_mode,
         allowed_data_roots=allowed_data_roots,
         forbidden_patterns=forbidden_patterns,
+    )
+    principle_report = validate_principles(
+        normalized,
+        output_mode=output_mode,
         risk_tags=risk_tags,
         archetype=archetype,
     )
-    return normalized_candidate, format_report, rule_report
+    rule_report = _merge_reports("rule_validator", syntax_report, static_report, principle_report)
+    return normalized_candidate, format_report, syntax_report, static_report, principle_report, rule_report
 
 
 def validate_format(candidate: str, output_mode: str) -> ValidatorReport:
@@ -226,21 +257,77 @@ def validate_rules(
     if output_mode == CLARIFICATION:
         return ValidatorReport(validator="rule_validator", status="pass")
 
-    findings: list[ValidationFinding] = []
-    lua_segments = _extract_lua_segments(candidate, output_mode)
+    syntax_report = validate_syntax(candidate, output_mode=output_mode)
+    static_report = validate_static(
+        candidate,
+        output_mode=output_mode,
+        allowed_data_roots=allowed_data_roots,
+        forbidden_patterns=forbidden_patterns,
+    )
+    principle_report = validate_principles(
+        candidate,
+        output_mode=output_mode,
+        risk_tags=risk_tags,
+        archetype=archetype,
+    )
+    return _merge_reports("rule_validator", syntax_report, static_report, principle_report)
 
+
+def validate_syntax(candidate: str, *, output_mode: str) -> ValidatorReport:
+    if output_mode == CLARIFICATION:
+        return ValidatorReport(validator="syntax_validator", status="pass")
+
+    lua_segments = _extract_lua_segments(candidate, output_mode)
+    stylua_report = _run_stylua_check(lua_segments)
+    if stylua_report is not None:
+        return stylua_report
+
+    findings = _validate_lua_syntax(lua_segments)
+    if findings:
+        return ValidatorReport(validator="syntax_validator", status="fail", findings=tuple(findings))
+    return ValidatorReport(validator="syntax_validator", status="pass")
+
+
+def validate_static(
+    candidate: str,
+    *,
+    output_mode: str,
+    allowed_data_roots: tuple[str, ...],
+    forbidden_patterns: tuple[str, ...],
+) -> ValidatorReport:
+    if output_mode == CLARIFICATION:
+        return ValidatorReport(validator="static_validator", status="pass")
+
+    lua_segments = _extract_lua_segments(candidate, output_mode)
+    findings: list[ValidationFinding] = []
     findings.extend(_validate_paths(lua_segments, allowed_data_roots))
     findings.extend(_validate_forbidden_patterns(candidate, lua_segments, forbidden_patterns))
-    findings.extend(_validate_lua_syntax(lua_segments))
-    findings.extend(_validate_archetype_specific(lua_segments, candidate, risk_tags, archetype, output_mode))
+
+    if not findings and output_mode == RAW_LUA:
+        luacheck_report = _run_luacheck(lua_segments)
+        if luacheck_report is not None:
+            return luacheck_report
 
     if findings:
-        return ValidatorReport(
-            validator="rule_validator",
-            status="fail",
-            findings=tuple(findings),
-        )
-    return ValidatorReport(validator="rule_validator", status="pass")
+        return ValidatorReport(validator="static_validator", status="fail", findings=tuple(findings))
+    return ValidatorReport(validator="static_validator", status="pass")
+
+
+def validate_principles(
+    candidate: str,
+    *,
+    output_mode: str,
+    risk_tags: tuple[str, ...],
+    archetype: str,
+) -> ValidatorReport:
+    if output_mode == CLARIFICATION:
+        return ValidatorReport(validator="principle_validator", status="pass")
+
+    lua_segments = _extract_lua_segments(candidate, output_mode)
+    findings = _validate_archetype_specific(lua_segments, candidate, risk_tags, archetype, output_mode)
+    if findings:
+        return ValidatorReport(validator="principle_validator", status="fail", findings=tuple(findings))
+    return ValidatorReport(validator="principle_validator", status="pass")
 
 
 def _validate_paths(lua_segments: list[tuple[str, str]], allowed_data_roots: tuple[str, ...]) -> list[ValidationFinding]:
@@ -394,6 +481,355 @@ def _validate_lua_syntax(lua_segments: list[tuple[str, str]]) -> list[Validation
     return findings
 
 
+def _run_stylua_check(lua_segments: list[tuple[str, str]]) -> ValidatorReport | None:
+    stylua_binary = _resolve_tool_binary("STYLUA_BIN", "stylua")
+    if stylua_binary is None:
+        return None
+
+    for index, (location, segment) in enumerate(lua_segments, start=1):
+        with tempfile.TemporaryDirectory(prefix="luamts-validator-") as temp_dir:
+            file_path = Path(temp_dir) / f"snippet_{index}.lua"
+            file_path.write_text(_prepare_lua_segment_for_tool(segment), encoding="utf-8")
+            command = _build_stylua_command(stylua_binary, file_path)
+            try:
+                completed = subprocess.run(
+                    command,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=_VALIDATOR_TOOL_TIMEOUT_SECONDS,
+                )
+            except subprocess.TimeoutExpired:
+                return ValidatorReport(
+                    validator="syntax_validator",
+                    status="fail",
+                    findings=(
+                        ValidationFinding(
+                            validator="stylua_validator",
+                            failure_class="stylua_check_failed_timeout",
+                            message="Stylua check failed: tool timed out while checking the Lua snippet.",
+                            location=location,
+                            repairable=False,
+                            suggestion="Fix the Lua syntax issue and retry the stylua check.",
+                        ),
+                    ),
+                )
+            except OSError as exc:
+                return ValidatorReport(
+                    validator="syntax_validator",
+                    status="fail",
+                    findings=(
+                        ValidationFinding(
+                            validator="stylua_validator",
+                            failure_class="stylua_check_failed_execution_error",
+                            message=f"Stylua check failed: unable to execute the tool ({exc}).",
+                            location=location,
+                            repairable=False,
+                            suggestion="Make sure stylua is installed and reachable by the validator.",
+                        ),
+                    ),
+                )
+
+            if completed.returncode == 0:
+                continue
+
+            details = _compact_tool_output(completed.stderr or completed.stdout)
+            if details.startswith("Diff in "):
+                continue
+
+            message = "Stylua check failed" if not details else f"Stylua check failed: {details}"
+            return ValidatorReport(
+                validator="syntax_validator",
+                status="fail",
+                findings=(
+                    ValidationFinding(
+                        validator="stylua_validator",
+                        failure_class="stylua_check_failed",
+                        message=message,
+                        location=location,
+                        repairable=True,
+                        suggestion="Fix the Lua syntax or formatting issue reported by stylua.",
+                    ),
+                ),
+            )
+
+    return ValidatorReport(validator="syntax_validator", status="pass")
+
+
+def _run_luacheck(lua_segments: list[tuple[str, str]]) -> ValidatorReport | None:
+    luacheck_binary = _resolve_tool_binary("LUACHECK_BIN", "luacheck")
+    if luacheck_binary is None:
+        return None
+
+    for index, (location, segment) in enumerate(lua_segments, start=1):
+        with tempfile.TemporaryDirectory(prefix="luamts-validator-") as temp_dir:
+            file_path = Path(temp_dir) / f"snippet_{index}.lua"
+            file_path.write_text(_prepare_lua_segment_for_tool(segment), encoding="utf-8")
+            command = _build_luacheck_command(luacheck_binary, file_path)
+            environment = _build_luacheck_environment(luacheck_binary)
+
+            try:
+                completed = subprocess.run(
+                    command,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=_VALIDATOR_TOOL_TIMEOUT_SECONDS,
+                    env=environment,
+                )
+            except subprocess.TimeoutExpired:
+                return ValidatorReport(
+                    validator="static_validator",
+                    status="fail",
+                    findings=(
+                        ValidationFinding(
+                            validator="luacheck_validator",
+                            failure_class="luacheck_failed_timeout",
+                            message="Luacheck reported a static analysis issue: tool timed out while checking the Lua snippet.",
+                            location=location,
+                            repairable=False,
+                            suggestion="Fix the Lua issue and retry the luacheck pass.",
+                        ),
+                    ),
+                )
+            except OSError as exc:
+                return ValidatorReport(
+                    validator="static_validator",
+                    status="fail",
+                    findings=(
+                        ValidationFinding(
+                            validator="luacheck_validator",
+                            failure_class="luacheck_failed_execution_error",
+                            message=f"Luacheck reported a static analysis issue: unable to execute the tool ({exc}).",
+                            location=location,
+                            repairable=False,
+                            suggestion="Make sure luacheck is installed and reachable by the validator.",
+                        ),
+                    ),
+                )
+
+            if completed.returncode == 0:
+                continue
+
+            details = _compact_tool_output(completed.stderr or completed.stdout)
+            if not _luacheck_output_requires_failure(details):
+                continue
+
+            message = "Luacheck reported a static analysis issue" if not details else f"Luacheck reported a static analysis issue: {details}"
+            return ValidatorReport(
+                validator="static_validator",
+                status="fail",
+                findings=(
+                    ValidationFinding(
+                        validator="luacheck_validator",
+                        failure_class="luacheck_failed",
+                        message=message,
+                        location=location,
+                        repairable=True,
+                        suggestion="Fix the Lua issue reported by luacheck while keeping the requested behavior.",
+                    ),
+                ),
+            )
+
+    return ValidatorReport(validator="static_validator", status="pass")
+
+
+def _resolve_tool_binary(env_var: str, default: str) -> str | None:
+    configured_path = os.environ.get(env_var)
+    if configured_path:
+        return configured_path
+    local_path = _LOCAL_TOOL_PATHS.get(default)
+    if local_path is not None and local_path.exists():
+        return str(local_path)
+    return shutil.which(default)
+
+
+def _run_external_lua_tool(
+    lua_segments: list[tuple[str, str]],
+    *,
+    tool_binary: str,
+    command_builder: Callable[[str, Path], list[str]],
+    env_builder: Callable[[str], dict[str, str] | None] | None,
+    validator: str,
+    failure_class: str,
+    message_prefix: str,
+    suggestion: str,
+) -> list[ValidationFinding]:
+    for index, (location, segment) in enumerate(lua_segments, start=1):
+        with tempfile.TemporaryDirectory(prefix="luamts-validator-") as temp_dir:
+            file_path = Path(temp_dir) / f"snippet_{index}.lua"
+            file_path.write_text(_prepare_lua_segment_for_tool(segment), encoding="utf-8")
+            command = command_builder(tool_binary, file_path)
+            environment = env_builder(tool_binary) if env_builder is not None else None
+            try:
+                completed = subprocess.run(
+                    command,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=_VALIDATOR_TOOL_TIMEOUT_SECONDS,
+                    env=environment,
+                )
+            except subprocess.TimeoutExpired:
+                return [
+                    ValidationFinding(
+                        validator=validator,
+                        failure_class=f"{failure_class}_timeout",
+                        message=f"{message_prefix}: tool timed out while checking the Lua snippet.",
+                        location=location,
+                        repairable=False,
+                        suggestion=suggestion,
+                    )
+                ]
+            except OSError as exc:
+                return [
+                    ValidationFinding(
+                        validator=validator,
+                        failure_class=f"{failure_class}_execution_error",
+                        message=f"{message_prefix}: unable to execute the tool ({exc}).",
+                        location=location,
+                        repairable=False,
+                        suggestion=suggestion,
+                    )
+                ]
+
+            if completed.returncode == 0:
+                continue
+
+            details = _compact_tool_output(completed.stderr or completed.stdout)
+            message = message_prefix if not details else f"{message_prefix}: {details}"
+            return [
+                ValidationFinding(
+                    validator=validator,
+                    failure_class=failure_class,
+                    message=message,
+                    location=location,
+                    repairable=True,
+                    suggestion=suggestion,
+                )
+            ]
+
+    return []
+
+
+def _build_stylua_command(tool_binary: str, file_path: Path) -> list[str]:
+    command = [tool_binary, "--check"]
+    if _LOCAL_STYLUA_CONFIG.exists():
+        command.extend(["--config-path", str(_LOCAL_STYLUA_CONFIG)])
+    command.append(str(file_path))
+    return command
+
+
+def _build_luacheck_command(tool_binary: str, file_path: Path) -> list[str]:
+    if Path(tool_binary).is_file():
+        lua_binary = _resolve_tool_binary("LUA_BIN", "lua")
+        if lua_binary is None:
+            return [tool_binary, "--codes", "--no-color", str(file_path)]
+
+        command = [lua_binary, tool_binary, "--codes", "--no-color"]
+        if _LOCAL_LUACHECK_CONFIG.exists():
+            command.extend(["--config", str(_LOCAL_LUACHECK_CONFIG)])
+        command.append(str(file_path))
+        return command
+
+    command = [tool_binary, "--codes", "--no-color"]
+    if _LOCAL_LUACHECK_CONFIG.exists():
+        command.extend(["--config", str(_LOCAL_LUACHECK_CONFIG)])
+    else:
+        command.extend(["--globals", "wf", "_utils"])
+    command.append(str(file_path))
+    return command
+
+
+def _compact_tool_output(output: str) -> str:
+    return " ".join(output.strip().split())
+
+
+def _build_luacheck_environment(tool_binary: str) -> dict[str, str] | None:
+    if not Path(tool_binary).is_file():
+        return None
+
+    environment = os.environ.copy()
+    environment["LUA_PATH"] = (
+        f"{_LOCAL_LUA_SHARE}\\?.lua;{_LOCAL_LUA_SHARE}\\?\\init.lua;"
+        + environment.get("LUA_PATH", ";;")
+    )
+    environment["LUA_CPATH"] = f"{_LOCAL_LUA_LIB}\\?.dll;" + environment.get("LUA_CPATH", ";;")
+
+    path_parts = [
+        str(_LOCAL_MINGW_BIN_DIR),
+        str(_LOCAL_LUA_BIN_DIR),
+        environment.get("PATH", ""),
+    ]
+    environment["PATH"] = ";".join(part for part in path_parts if part)
+    return environment
+
+
+def _luacheck_output_requires_failure(output: str) -> bool:
+    if not output:
+        return True
+
+    if re.search(r"\(E\d{3}\)", output):
+        return True
+
+    if "(W113)" in output:
+        return True
+
+    return not bool(re.search(r"\(W\d{3}\)", output))
+
+
+def _prepare_lua_segment_for_tool(segment: str) -> str:
+    normalized_segment = _localize_top_level_assignments_for_tool(segment)
+    non_empty_lines = [line for line in segment.splitlines() if line.strip()]
+    if not non_empty_lines:
+        return normalized_segment
+
+    first_line = non_empty_lines[0].strip()
+    if _looks_like_lua(first_line):
+        return normalized_segment
+
+    return f"return {normalized_segment}"
+
+
+def _localize_top_level_assignments_for_tool(segment: str) -> str:
+    declared_names: set[str] = set()
+    normalized_lines: list[str] = []
+
+    for line in segment.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("local "):
+            declared_names.update(_extract_local_names(stripped))
+            normalized_lines.append(line)
+            continue
+
+        function_match = re.match(r"^function\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\(", line)
+        if function_match is not None:
+            declared_names.add(function_match.group("name"))
+            normalized_lines.append(f"local {line}")
+            continue
+
+        match = re.match(r"^(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*=", line)
+        if match is None:
+            normalized_lines.append(line)
+            continue
+
+        variable_name = match.group("name")
+        if variable_name in declared_names:
+            normalized_lines.append(line)
+            continue
+
+        declared_names.add(variable_name)
+        normalized_lines.append(f"local {line}")
+
+    return "\n".join(normalized_lines)
+
+
+def _extract_local_names(line: str) -> list[str]:
+    left_side = line[6:]
+    names_part = left_side.split("=", 1)[0]
+    return [name.strip() for name in names_part.split(",") if name.strip()]
+
+
 def _validate_archetype_specific(
     lua_segments: list[tuple[str, str]],
     candidate: str,
@@ -417,8 +853,38 @@ def _validate_archetype_specific(
         )
         return findings
 
-    if "timezone_offset" in risk_tags and not all(
-        token in combined_segments for token in ("offset_sign", "offset_hour", "offset_min")
+    if "field_whitelist" in risk_tags:
+        if not _matches_field_preservation_pattern(combined_segments):
+            findings.append(
+                ValidationFinding(
+                    validator="principle_validator",
+                    failure_class="missing_field_whitelist_pattern",
+                    message="Field-preservation tasks must either iterate over keys with explicit key checks or update the named fields directly while preserving untouched data.",
+                    location="response",
+                    repairable=True,
+                    suggestion="Either use key iteration with explicit key ~= checks, or update the named fields directly without dropping unrelated data.",
+                )
+            )
+            return findings
+
+    if "field_value_clearing" in risk_tags:
+        if not _has_direct_named_field_updates(combined_segments):
+            findings.append(
+                ValidationFinding(
+                    validator="principle_validator",
+                    failure_class="missing_named_field_update_pattern",
+                    message="Field-clearing tasks must update the named fields directly while preserving unrelated data.",
+                    location="response",
+                    repairable=True,
+                    suggestion="Assign nil or the cleared value directly to the named fields instead of reshaping the full object.",
+                )
+            )
+            return findings
+
+    if (
+        "timezone_offset" in risk_tags
+        and "parse_iso8601_to_epoch" not in combined_segments
+        and not all(token in combined_segments for token in ("offset_sign", "offset_hour", "offset_min"))
     ):
         findings.append(
             ValidationFinding(
@@ -444,6 +910,27 @@ def _validate_archetype_specific(
             )
         )
         return findings
+
+    if output_mode == PATCH_MODE:
+        try:
+            payload = json.loads(candidate)
+        except json.JSONDecodeError:
+            payload = None
+
+        if isinstance(payload, dict):
+            invalid_keys = [key for key in payload if key.startswith("wf.") or "." in key]
+            if invalid_keys:
+                findings.append(
+                    ValidationFinding(
+                        validator="principle_validator",
+                        failure_class="patch_path_keys",
+                        message="patch_mode must return additive field names, not wf.* paths as JSON keys.",
+                        location=f"response.{invalid_keys[0]}",
+                        repairable=True,
+                        suggestion="Return only the local payload fields that should be added or changed.",
+                    )
+                )
+                return findings
 
     if output_mode == PATCH_MODE and '"wf"' in candidate:
         findings.append(
@@ -504,6 +991,27 @@ def _iter_string_leaves(node: Any, location: str = "$") -> list[tuple[str, str]]
     return []
 
 
+def _matches_field_preservation_pattern(candidate: str) -> bool:
+    return _has_whitelist_key_iteration(candidate) or _has_direct_named_field_updates(candidate)
+
+
+def _has_whitelist_key_iteration(candidate: str) -> bool:
+    return "for key" in candidate and "key ~=" in candidate
+
+
+def _has_direct_named_field_updates(candidate: str) -> bool:
+    return bool(_extract_named_field_updates(candidate))
+
+
+def _extract_named_field_updates(candidate: str) -> set[str]:
+    fields: set[str] = set()
+    for match in _DIRECT_FIELD_ASSIGNMENT_PATTERN.finditer(candidate):
+        literal = match.group("bracket") or match.group("dot")
+        if literal:
+            fields.add(literal)
+    return fields
+
+
 def _path_is_allowed(root: str, allowed_data_roots: tuple[str, ...]) -> bool:
     return any(
         root == allowed
@@ -542,3 +1050,34 @@ def _fail_report(validator: str, finding: ValidationFinding) -> ValidatorReport:
         status="fail",
         findings=(finding,),
     )
+
+
+def _skipped_report(validator: str, reason: str) -> ValidatorReport:
+    return ValidatorReport(
+        validator=validator,
+        status="skipped",
+        skipped_reason=reason,
+    )
+
+
+def _merge_reports(validator: str, *reports: ValidatorReport) -> ValidatorReport:
+    findings: list[ValidationFinding] = []
+    for report in reports:
+        findings.extend(report.findings)
+
+    if findings:
+        return ValidatorReport(
+            validator=validator,
+            status="fail",
+            findings=tuple(findings),
+        )
+
+    if any(report.status == "skipped" for report in reports):
+        skipped_reason = next((report.skipped_reason for report in reports if report.skipped_reason), None)
+        return ValidatorReport(
+            validator=validator,
+            status="skipped",
+            skipped_reason=skipped_reason,
+        )
+
+    return ValidatorReport(validator=validator, status="pass")

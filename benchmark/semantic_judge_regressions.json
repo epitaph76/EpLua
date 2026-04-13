@@ -1,0 +1,18 @@
+{
+  "dataset_id": "semantic-judge-regressions",
+  "version": "1.0.0",
+  "cases": [
+    {
+      "id": "case-03-restbody-cleanup",
+      "bucket": "ambiguous_spec",
+      "source_report": "artifacts/benchmark_runs/2026-04-12_qwen3-coder-480b-cloud_tail-triage.json",
+      "notes": "Task wording and earlier expected output conflicted between clear-target-fields and keep-only-fields semantics."
+    },
+    {
+      "id": "lua100-task-058",
+      "bucket": "semantic_false_positive",
+      "source_report": "artifacts/benchmark_runs/2026-04-12_qwen3-coder-480b-cloud_tail-triage.json",
+      "notes": "Semantic message is internally contradictory about whether the successful attempt should be counted."
+    }
+  ]
+}

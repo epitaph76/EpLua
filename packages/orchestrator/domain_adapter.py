@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from packages.retrieval.selector import RetrievalPack, select_retrieval_pack
+
 RAW_LUA = "raw_lua"
 JSON_WRAPPER = "json_wrapper"
 PATCH_MODE = "patch_mode"
@@ -27,6 +29,7 @@ class DomainPromptPackage:
     allowed_data_roots: tuple[str, ...]
     forbidden_patterns: tuple[str, ...]
     risk_tags: tuple[str, ...]
+    task_intents: tuple[str, ...]
     clarification_required: bool
 
 
@@ -59,6 +62,12 @@ def build_domain_prompt_package(
     common_rules = templates["common_rules"]
     forbidden_patterns = tuple(templates["forbidden_patterns"])
     risk_tags = tuple(risk_tags or ())
+    task_intents = _resolve_task_intents(task_text)
+    retrieval_pack = select_retrieval_pack(
+        archetype=archetype,
+        output_mode=effective_output_mode,
+        risk_tags=risk_tags,
+    )
 
     prompt_sections = [
         "You are generating LocalScript-compatible Lua 5.5 for the luaMTS domain.",
@@ -75,6 +84,17 @@ def build_domain_prompt_package(
         _format_list(forbidden_patterns),
     ]
 
+    intent_hints = _intent_hints(task_intents)
+    if task_intents:
+        prompt_sections.extend(
+            [
+                "Resolved task intents:",
+                _format_list(list(task_intents)),
+            ]
+        )
+    if intent_hints:
+        prompt_sections.extend(["Intent hints:", _format_list(intent_hints)])
+
     if risk_tags:
         risk_hints = [
             templates["risk_hints"][risk_tag]
@@ -83,6 +103,10 @@ def build_domain_prompt_package(
         ]
         if risk_hints:
             prompt_sections.extend(["Risk hints:", _format_list(risk_hints)])
+
+    retrieval_section = _format_retrieval_section(retrieval_pack)
+    if retrieval_section:
+        prompt_sections.extend(["Retrieved guidance:", retrieval_section])
 
     if clarification_required:
         prompt_sections.extend(
@@ -105,6 +129,7 @@ def build_domain_prompt_package(
         allowed_data_roots=normalized_roots,
         forbidden_patterns=forbidden_patterns,
         risk_tags=risk_tags,
+        task_intents=task_intents,
         clarification_required=clarification_required,
     )
 
@@ -255,6 +280,79 @@ def _looks_like_lua(line: str) -> bool:
 
 def _format_list(values: list[str] | tuple[str, ...]) -> str:
     return "\n".join(f"- {value}" for value in values)
+
+
+def _resolve_task_intents(task_text: str) -> tuple[str, ...]:
+    lowered = task_text.lower()
+    intents: list[str] = []
+
+    if ("очист" in lowered or "reset" in lowered or "clear " in lowered) and (
+        "значен" in lowered or "пол" in lowered or "field" in lowered or "key" in lowered
+    ):
+        intents.append("clear_target_fields")
+
+    if "удали" in lowered or "remove" in lowered or "delete" in lowered:
+        intents.append("remove_target_fields")
+
+    if "оставь только" in lowered or "keep only" in lowered or "only fields" in lowered:
+        intents.append("keep_only_target_fields")
+
+    if "не трогай" in lowered or "остальные поля" in lowered or "preserve untouched" in lowered:
+        intents.append("preserve_untouched_fields")
+
+    if "в существующ" in lowered or "in place" in lowered:
+        intents.append("mutate_in_place")
+
+    return tuple(dict.fromkeys(intents))
+
+
+def _intent_hints(task_intents: tuple[str, ...]) -> list[str]:
+    hints: list[str] = []
+    if "clear_target_fields" in task_intents:
+        hints.append("When the task says to clear field values, update only those named fields and preserve unrelated fields.")
+    if "remove_target_fields" in task_intents:
+        hints.append("When the task says to remove fields, delete only the named keys instead of filtering the full object shape.")
+    if "keep_only_target_fields" in task_intents:
+        hints.append("When the task says to keep only certain fields, explicitly drop unrelated keys and return the reduced shape.")
+    if "preserve_untouched_fields" in task_intents:
+        hints.append("Untouched fields must remain available unless the task explicitly says to remove them.")
+    if "mutate_in_place" in task_intents:
+        hints.append("Prefer in-place mutation only when the task wording explicitly asks to update the existing structure.")
+    return hints
+
+
+def _format_retrieval_section(retrieval_pack: RetrievalPack) -> str | None:
+    if not retrieval_pack.has_guidance():
+        return None
+
+    lines: list[str] = []
+    if retrieval_pack.examples:
+        lines.append("Similar examples:")
+        for example in retrieval_pack.examples:
+            lines.append(
+                f"- {example['id']} ({example['source_ref']}): task={example['task']}"
+            )
+            raw_lua = example.get("expected_outputs", {}).get(RAW_LUA)
+            if raw_lua:
+                lines.append(f"  raw_lua={raw_lua}")
+
+    if retrieval_pack.archetype_template:
+        lines.append("Archetype template guidance:")
+        for hint in retrieval_pack.archetype_template.get("selection_hints", []):
+            lines.append(f"- {hint}")
+        for rule in retrieval_pack.archetype_template.get("transformation_rules", []):
+            lines.append(f"- {rule}")
+
+    if retrieval_pack.format_rules:
+        lines.append("Format/rules pack:")
+        lines.append(f"- Output mode: {retrieval_pack.format_rules['output_mode']}")
+        lines.append(f"- Expected result format: {retrieval_pack.format_rules['expected_result_format']}")
+        for rule in retrieval_pack.format_rules.get("rules", []):
+            lines.append(f"- {rule}")
+        for hint in retrieval_pack.format_rules.get("risk_hints", []):
+            lines.append(f"- Risk hint: {hint}")
+
+    return "\n".join(lines)
 
 
 def _load_json(path: Path) -> dict[str, Any]:

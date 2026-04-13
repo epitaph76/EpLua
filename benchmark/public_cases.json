@@ -105,7 +105,7 @@
     {
       "id": "case-03-restbody-cleanup",
       "title": "Очистка значений в переменных",
-      "prompt": "Для полученных данных из предыдущего REST запроса очисти значения переменных ID, ENTITY_ID, CALL.",
+      "prompt": "Для полученных данных из предыдущего REST запроса очисти значения полей ID, ENTITY_ID и CALL, остальные поля не трогай.",
       "context": {
         "wf": {
           "vars": {
@@ -137,9 +137,9 @@
       ],
       "primary_output_mode": "raw_lua",
       "expected_outputs": {
-        "raw_lua": "result = wf.vars.RESTbody.result\nfor _, filteredEntry in pairs(result) do\n  for key, value in pairs(filteredEntry) do\n    if key ~= \"ID\" and key ~= \"ENTITY_ID\" and key ~= \"CALL\" then\n      filteredEntry[key] = nil\n    end\n  end\nend\n\nreturn result",
+        "raw_lua": "local result = wf.vars.RESTbody.result\nfor _, filteredEntry in pairs(result) do\n  filteredEntry[\"ID\"] = nil\n  filteredEntry[\"ENTITY_ID\"] = nil\n  filteredEntry[\"CALL\"] = nil\nend\n\nreturn result",
         "json_wrapper": {
-          "result": "lua{\nresult = wf.vars.RESTbody.result\nfor _, filteredEntry in pairs(result) do\n  for key, value in pairs(filteredEntry) do\n    if key ~= \"ID\" and key ~= \"ENTITY_ID\" and key ~= \"CALL\" then\n      filteredEntry[key] = nil\n    end\n  end\nend\n\nreturn result\n}lua"
+          "result": "lua{\nlocal result = wf.vars.RESTbody.result\nfor _, filteredEntry in pairs(result) do\n  filteredEntry[\"ID\"] = nil\n  filteredEntry[\"ENTITY_ID\"] = nil\n  filteredEntry[\"CALL\"] = nil\nend\n\nreturn result\n}lua"
         }
       },
       "input_roots": [
@@ -147,7 +147,7 @@
       ],
       "risk_tags": [
         "table_mutation",
-        "field_whitelist",
+        "field_value_clearing",
         "nil_handling",
         "json_wrapper"
       ],

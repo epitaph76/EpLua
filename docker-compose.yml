@@ -1,0 +1,53 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: luamts-ollama
+    ports:
+      - "${OLLAMA_PUBLISHED_PORT:-11434}:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  ollama-model-init:
+    image: ollama/ollama:latest
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5-coder:3b}
+      OLLAMA_LOCAL_GGUF_BASENAME: ${OLLAMA_LOCAL_GGUF_BASENAME:-}
+    volumes:
+      - ${OLLAMA_LOCAL_GGUF_DIR:-./docker/models}:/models:ro
+      - ./docker/ollama/init-model.sh:/init-model.sh:ro
+    entrypoint: ["/bin/sh", "/init-model.sh"]
+    restart: "no"
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/api/Dockerfile
+    container_name: luamts-api
+    depends_on:
+      ollama-model-init:
+        condition: service_completed_successfully
+    environment:
+      PYTHONPATH: /app:/app/apps/api
+      APP_HOST: 0.0.0.0
+      APP_PORT: 8011
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5-coder:3b}
+      OLLAMA_REQUEST_TIMEOUT: ${OLLAMA_REQUEST_TIMEOUT:-420}
+      STYLUA_BIN: /usr/local/bin/stylua
+      LUACHECK_BIN: /usr/local/bin/luacheck
+      LUA_BIN: /usr/bin/lua5.4
+    ports:
+      - "${API_PUBLISHED_PORT:-8011}:8011"
+    command: ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8011"]
+
+volumes:
+  ollama-data:

@@ -51,6 +51,7 @@
     "empty_array": "Account for empty arrays before reading the last or first item.",
     "numeric_transform": "Preserve numeric intent and avoid converting working values to strings.",
     "table_mutation": "Mutate only the required fields and keep unrelated table content intact.",
+    "field_value_clearing": "When the task says to clear target field values, update only those named fields and preserve unrelated data.",
     "nil_handling": "Guard nil values and empty strings before operating on them.",
     "datetime_format": "Validate date and time substrings before composing the result.",
     "substring_bounds": "Protect substring operations from short or malformed inputs.",
