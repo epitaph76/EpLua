@@ -1131,6 +1131,9 @@ def test_generation_service_keeps_best_candidate_after_three_repairs() -> None:
     assert result["validation_status"] == "bounded_failure"
     assert result["repair_count"] == 3
     assert result["code"] == "return wf.vars.emails[1]"
+    assert result["final_candidate_source"] == "best_candidate"
+    assert result["final_candidate_iteration_index"] == 0
+    assert result["critic_report_iteration_index"] == 3
     assert result["critic_report"] == {
         "action": "finalize",
         "failure_class": "empty_output",
@@ -1249,11 +1252,245 @@ def test_generation_service_accepts_always_array_normalization_false_positive() 
     assert result["validator_report"]["iterations"][0]["semantic_report"]["status"] == "pass"
 
 
+def test_generation_service_accepts_error_code_array_projection_false_positive() -> None:
+    service = GenerationService(
+        model_adapter=ScriptedModelAdapter(
+            [
+                "\n".join(
+                    [
+                        "local result = _utils.array.new()",
+                        "for _, error in ipairs(wf.vars.errors) do",
+                        '  if error.code ~= nil and error.code ~= "" then',
+                        "    table.insert(result, error.code)",
+                        "  end",
+                        "end",
+                        "return result",
+                    ]
+                ),
+                (
+                    '{"status":"fail","failure_class":"semantic_mismatch","message":"Returns full error objects.",'
+                    '"repairable":true,"ambiguous":false,"suggestion":"Insert only error.code."}'
+                ),
+            ]
+        )
+    )
+
+    result = service.generate(
+        task_text="Из массива errors собери массив code только для записей, у которых code не пустой.",
+        provided_context=json.dumps({"wf": {"vars": {"errors": [{"code": "E1"}, {"code": ""}]}}}),
+        archetype="filtering",
+        output_mode="raw_lua",
+        input_roots=["wf.vars.errors"],
+        risk_tags=["array_allocation", "nil_handling", "empty_value_filtering"],
+        debug=True,
+    )
+
+    assert result["validation_status"] == "passed"
+    assert result["validator_report"]["iterations"][0]["semantic_report"]["status"] == "pass"
+
+
+def test_generation_service_keeps_error_object_array_projection_failure() -> None:
+    service = GenerationService(
+        model_adapter=ScriptedModelAdapter(
+            [
+                "\n".join(
+                    [
+                        "local result = _utils.array.new()",
+                        "for _, error in ipairs(wf.vars.errors) do",
+                        '  if error.code ~= nil and error.code ~= "" then',
+                        "    table.insert(result, error)",
+                        "  end",
+                        "end",
+                        "return result",
+                    ]
+                ),
+                (
+                    '{"status":"fail","failure_class":"semantic_mismatch","message":"Returns full error objects.",'
+                    '"repairable":false,"ambiguous":false,"suggestion":"Insert only error.code."}'
+                ),
+            ]
+        )
+    )
+
+    result = service.generate(
+        task_text="Из массива errors собери массив code только для записей, у которых code не пустой.",
+        provided_context=json.dumps({"wf": {"vars": {"errors": [{"code": "E1"}]}}}),
+        archetype="filtering",
+        output_mode="raw_lua",
+        input_roots=["wf.vars.errors"],
+        risk_tags=["array_allocation", "nil_handling", "empty_value_filtering"],
+        debug=True,
+    )
+
+    assert result["validation_status"] == "clarification_requested"
+    assert result["validator_report"]["iterations"][0]["semantic_report"]["status"] == "fail"
+
+
+def test_generation_service_accepts_file_meta_direct_projection_false_positive() -> None:
+    service = GenerationService(
+        model_adapter=ScriptedModelAdapter(
+            [
+                "\n".join(
+                    [
+                        "return {",
+                        "  name = wf.vars.fileMeta.name,",
+                        "  extension = wf.vars.fileMeta.extension,",
+                        "  size = wf.vars.fileMeta.size",
+                        "}",
+                    ]
+                ),
+                (
+                    '{"status":"fail","failure_class":"semantic_mismatch","message":"Must stay under fileMeta.",'
+                    '"repairable":true,"ambiguous":false,"suggestion":"Return direct fields."}'
+                ),
+            ]
+        )
+    )
+
+    result = service.generate(
+        task_text="Из объекта fileMeta оставь только name, extension и size.",
+        provided_context=json.dumps({"wf": {"vars": {"fileMeta": {"name": "a.png", "extension": "png", "size": 10}}}}),
+        archetype="transformation",
+        output_mode="raw_lua",
+        input_roots=["wf.vars.fileMeta"],
+        risk_tags=[],
+        debug=True,
+    )
+
+    assert result["validation_status"] == "passed"
+    assert result["validator_report"]["iterations"][0]["semantic_report"]["status"] == "pass"
+
+
+def test_generation_service_accepts_manager_name_fallback_false_positive() -> None:
+    service = GenerationService(
+        model_adapter=ScriptedModelAdapter(
+            [
+                'return wf.vars.team.manager and wf.vars.team.manager.name or "no-manager"',
+                (
+                    '{"status":"fail","failure_class":"semantic_mismatch","message":"Missing name returns nil.",'
+                    '"repairable":true,"ambiguous":false,"suggestion":"Use fallback."}'
+                ),
+            ]
+        )
+    )
+
+    result = service.generate(
+        task_text='Верни manager.name, а если manager отсутствует — строку "no-manager".',
+        provided_context=json.dumps({"wf": {"vars": {"team": {"manager": {"name": "Ann"}}}}}),
+        archetype="simple_extraction",
+        output_mode="raw_lua",
+        input_roots=["wf.vars.team.manager"],
+        risk_tags=["nil_handling", "empty_value_filtering"],
+        debug=True,
+    )
+
+    assert result["validation_status"] == "passed"
+    assert result["validator_report"]["iterations"][0]["semantic_report"]["status"] == "pass"
+
+
+def test_generation_service_accepts_date_ru_iso_reorder_false_positive() -> None:
+    service = GenerationService(
+        model_adapter=ScriptedModelAdapter(
+            [
+                "\n".join(
+                    [
+                        "local dateRu = wf.vars.dateRu",
+                        "local day = string.sub(dateRu, 1, 2)",
+                        "local month = string.sub(dateRu, 4, 5)",
+                        "local year = string.sub(dateRu, 7, 10)",
+                        'return string.format("%s-%s-%s", year, month, day)',
+                    ]
+                ),
+                (
+                    '{"status":"fail","failure_class":"semantic_mismatch","message":"Fields day and month are swapped.",'
+                    '"repairable":true,"ambiguous":false,"suggestion":"Use year, month, day."}'
+                ),
+            ]
+        )
+    )
+
+    result = service.generate(
+        task_text='Преобразуй dateRu из формата "DD.MM.YYYY" в "YYYY-MM-DD".',
+        provided_context=json.dumps({"wf": {"vars": {"dateRu": "31.12.2024"}}}),
+        archetype="transformation",
+        output_mode="raw_lua",
+        input_roots=["wf.vars.dateRu"],
+        risk_tags=["substring_bounds"],
+        debug=True,
+    )
+
+    assert result["validation_status"] == "passed"
+    assert result["validator_report"]["iterations"][0]["semantic_report"]["status"] == "pass"
+
+
+def test_generation_service_accepts_nil_tags_empty_array_false_positive() -> None:
+    service = GenerationService(
+        model_adapter=ScriptedModelAdapter(
+            [
+                "\n".join(
+                    [
+                        "local result = _utils.array.new()",
+                        "if wf.vars.tags ~= nil then",
+                        "  for _, tag in ipairs(wf.vars.tags) do",
+                        "    table.insert(result, tag)",
+                        "  end",
+                        "end",
+                        "return result",
+                    ]
+                ),
+                (
+                    '{"status":"fail","failure_class":"semantic_mismatch","message":"Unnecessary empty array branch.",'
+                    '"repairable":true,"ambiguous":false,"suggestion":"Return empty array for nil tags."}'
+                ),
+            ]
+        )
+    )
+
+    result = service.generate(
+        task_text="Верни массив tags, а если переменная tags равна nil — верни пустой массив.",
+        provided_context=json.dumps({"wf": {"vars": {"tags": None}}}),
+        archetype="filtering",
+        output_mode="raw_lua",
+        input_roots=["wf.vars.tags"],
+        risk_tags=["array_allocation", "nil_handling"],
+        debug=True,
+    )
+
+    assert result["validation_status"] == "passed"
+    assert result["validator_report"]["iterations"][0]["semantic_report"]["status"] == "pass"
+
+
 def test_generation_service_repairs_patch_mode_path_keys_with_tool() -> None:
     service = GenerationService(
         model_adapter=ScriptedModelAdapter(
             [
                 '{"wf.vars.squared":"lua{return wf.vars.number ^ 2}lua"}',
+                SEMANTIC_PASS_RESPONSE,
+                SEMANTIC_PASS_RESPONSE,
+            ]
+        )
+    )
+
+    result = service.generate(
+        task_text="Добавь переменную с квадратом числа.",
+        provided_context=json.dumps({"wf": {"vars": {"number": 5}}}),
+        archetype="transformation",
+        output_mode="patch_mode",
+        input_roots=["wf.vars.number"],
+        risk_tags=["patch_payload", "numeric_transform", "no_full_rewrite"],
+        debug=True,
+    )
+
+    assert result["validation_status"] == "repaired"
+    assert result["code"] == '{"squared":"lua{return wf.vars.number ^ 2}lua"}'
+    assert result["debug"]["model_calls"][2]["repair_source"] == "deterministic_tool"
+
+
+def test_generation_service_repairs_nested_full_rewrite_patch_payload_with_tool() -> None:
+    service = GenerationService(
+        model_adapter=ScriptedModelAdapter(
+            [
+                '{"wf":{"vars":{"squared":"lua{return wf.vars.number ^ 2}lua"}}}',
                 SEMANTIC_PASS_RESPONSE,
                 SEMANTIC_PASS_RESPONSE,
             ]

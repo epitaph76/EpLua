@@ -810,9 +810,9 @@
     },
     {
       "id": "lua100-task-022",
-      "title": "Сделай так, чтобы attachments у каждого сообщения всегда были массивом.",
+      "title": "Сделай так, чтобы attachments у каждого сообщения всегда были массивом, и верни messages.",
       "category": "нормализация типов",
-      "prompt": "Сделай так, чтобы attachments у каждого сообщения всегда были массивом.",
+      "prompt": "Сделай так, чтобы attachments у каждого сообщения всегда были массивом. Можно обновлять исходные объекты messages. Верни массив messages с нормализованными attachments.",
       "context": {
         "wf": {
           "vars": {
@@ -1696,9 +1696,9 @@
     },
     {
       "id": "lua100-task-046",
-      "title": "Преобразуй строку tagsCsv в массив значений по разделителю запятая.",
+      "title": "Преобразуй строку tagsCsv в массив значений по разделителю запятая: обрежь пробелы и пропусти пустые элементы.",
       "category": "строки и массивы",
-      "prompt": "Преобразуй строку tagsCsv в массив значений по разделителю запятая.",
+      "prompt": "Преобразуй строку tagsCsv в массив значений по разделителю запятая. Обрежь пробелы по краям каждого значения и пропусти пустые элементы.",
       "context": {
         "wf": {
           "vars": {
@@ -1712,7 +1712,7 @@
       ],
       "primary_output_mode": "raw_lua",
       "expected_outputs": {
-        "raw_lua": "local result = _utils.array.new()\nfor part in string.gmatch(wf.vars.tagsCsv, \"[^,]+\") do\n  table.insert(result, part)\nend\nreturn result"
+        "raw_lua": "local result = _utils.array.new()\nfor part in string.gmatch(wf.vars.tagsCsv, \"[^,]+\") do\n  local trimmed = string.match(part, \"^%s*(.-)%s*$\")\n  if trimmed ~= \"\" then\n    table.insert(result, trimmed)\n  end\nend\nreturn result"
       },
       "input_roots": [
         "wf.vars.tagsCsv"

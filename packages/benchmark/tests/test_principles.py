@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from packages.benchmark.principles import evaluate_case_by_principles
 
 
@@ -69,6 +71,269 @@ def test_principle_evaluator_accepts_direct_named_field_clearing_for_whitelist_l
     assert report["status"] == "pass"
     assert any(
         check["name"] == "field_value_clearing" and check["status"] == "pass"
+        for check in report["checks"]
+    )
+
+
+def test_principle_evaluator_accepts_mixed_case_hyphen_field_whitelist() -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    synthetic_cases = json.loads((repo_root / "benchmark" / "synthetic_cases.json").read_text(encoding="utf-8"))["cases"]
+    case = next(item for item in synthetic_cases if item["id"] == "synthetic-case-07-cleanup-headers")
+
+    candidate = "\n".join(
+        [
+            "local headers = wf.vars.headers",
+            "for key, _ in pairs(headers) do",
+            '  if key ~= "Authorization" and key ~= "Content-Type" then',
+            "    headers[key] = nil",
+            "  end",
+            "end",
+            "",
+            "return headers",
+        ]
+    )
+
+    report = evaluate_case_by_principles(case, candidate)
+
+    assert report["status"] == "pass"
+    assert any(
+        check["name"] == "field_whitelist_preservation" and check["status"] == "pass"
+        for check in report["checks"]
+    )
+
+
+def test_principle_evaluator_accepts_per_item_type_normalization_returning_parent_array() -> None:
+    case = {
+        "prompt": "Сделай так, чтобы attachments у каждого сообщения всегда были массивом. Верни массив messages.",
+        "context": {"wf": {"vars": {"messages": [{"attachments": {"name": "a.txt"}}]}}},
+        "archetype": "normalization",
+        "primary_output_mode": "raw_lua",
+        "input_roots": ["wf.vars.messages"],
+        "risk_tags": ["array_semantics", "type_normalization"],
+        "expected_outputs": {
+            "raw_lua": "\n".join(
+                [
+                    "local messages = wf.vars.messages",
+                    "for _, message in ipairs(messages) do",
+                    "  message.attachments = ensureArray(message.attachments)",
+                    "end",
+                    "return messages",
+                ]
+            )
+        },
+    }
+    candidate = "\n".join(
+        [
+            "local messages = wf.vars.messages",
+            "for _, message in ipairs(messages) do",
+            "  local attachments = message.attachments",
+            "  if attachments == nil then",
+            "    message.attachments = {}",
+            '  elseif type(attachments) ~= "table" then',
+            "    message.attachments = {attachments}",
+            "  else",
+            "    local isArray = true",
+            "    for k, _ in pairs(attachments) do",
+            '      if type(k) ~= "number" or math.floor(k) ~= k then',
+            "        isArray = false",
+            "        break",
+            "      end",
+            "    end",
+            "    if not isArray then",
+            "      message.attachments = {attachments}",
+            "    end",
+            "  end",
+            "end",
+            "return messages",
+        ]
+    )
+
+    report = evaluate_case_by_principles(case, candidate)
+
+    assert report["status"] == "pass"
+    assert any(
+        check["name"] == "type_normalization_guard" and check["status"] == "pass"
+        for check in report["checks"]
+    )
+    assert any(
+        check["name"] == "type_normalization_return_contract" and check["status"] == "pass"
+        for check in report["checks"]
+    )
+
+
+def test_principle_evaluator_accepts_field_type_normalization_returning_field_array() -> None:
+    case = {
+        "prompt": "Сделай так, чтобы поле roles в user всегда было массивом строк. Верни нормализованный массив roles.",
+        "context": {"wf": {"vars": {"user": {"roles": "admin"}}}},
+        "archetype": "normalization",
+        "primary_output_mode": "raw_lua",
+        "input_roots": ["wf.vars.user.roles"],
+        "risk_tags": ["array_semantics", "type_normalization"],
+        "expected_outputs": {"raw_lua": "local roles = wf.vars.user.roles\nreturn roles"},
+    }
+    candidate = "\n".join(
+        [
+            "local user = wf.vars.user",
+            "local roles = user.roles",
+            "if roles == nil then",
+            "  user.roles = {}",
+            'elseif type(roles) ~= "table" then',
+            "  user.roles = {roles}",
+            "else",
+            "  for k, _ in pairs(roles) do",
+            '    if type(k) ~= "number" or math.floor(k) ~= k then',
+            "      user.roles = {roles}",
+            "      break",
+            "    end",
+            "  end",
+            "end",
+            "return user.roles",
+        ]
+    )
+
+    report = evaluate_case_by_principles(case, candidate)
+
+    assert report["status"] == "pass"
+
+
+def test_principle_evaluator_accepts_scalar_type_normalization() -> None:
+    case = {
+        "prompt": "Если phone хранится строкой, преобразуй его в массив из одного элемента.",
+        "context": {"wf": {"vars": {"phone": "79991234567"}}},
+        "archetype": "normalization",
+        "primary_output_mode": "raw_lua",
+        "input_roots": ["wf.vars.phone"],
+        "risk_tags": ["array_semantics", "type_normalization"],
+        "expected_outputs": {"raw_lua": "local phone = wf.vars.phone\nif type(phone) == \"string\" then\n  return {phone}\nend\nreturn phone"},
+    }
+    candidate = "\n".join(
+        [
+            "local phone = wf.vars.phone",
+            'if type(phone) == "string" then',
+            "  return {phone}",
+            "end",
+            "return phone",
+        ]
+    )
+
+    report = evaluate_case_by_principles(case, candidate)
+
+    assert report["status"] == "pass"
+
+
+def test_principle_evaluator_rejects_field_type_normalization_without_field_array_return() -> None:
+    case = {
+        "prompt": "Сделай так, чтобы field tags в article всегда был массивом. Верни нормализованный массив tags.",
+        "context": {"wf": {"vars": {"article": {"tags": {"value": "news"}}}}},
+        "archetype": "normalization",
+        "primary_output_mode": "raw_lua",
+        "input_roots": ["wf.vars.article.tags"],
+        "risk_tags": ["array_semantics", "type_normalization"],
+        "expected_outputs": {"raw_lua": "local tags = wf.vars.article.tags\nreturn tags"},
+    }
+    candidate = "\n".join(
+        [
+            "local article = wf.vars.article",
+            "local tags = article.tags",
+            "if tags == nil then",
+            "  article.tags = {}",
+            "  return",
+            "end",
+            'if type(tags) ~= "table" then',
+            "  article.tags = {tags}",
+            "  return",
+            "end",
+            "for k, _ in pairs(tags) do",
+            '  if type(k) ~= "number" or math.floor(k) ~= k then',
+            "    article.tags = {tags}",
+            "    break",
+            "  end",
+            "end",
+        ]
+    )
+
+    report = evaluate_case_by_principles(case, candidate)
+
+    assert report["status"] == "fail"
+    assert any(
+        check["name"] == "type_normalization_guard" and check["status"] == "pass"
+        for check in report["checks"]
+    )
+    assert any(
+        check["name"] == "type_normalization_return_contract" and check["status"] == "fail"
+        for check in report["checks"]
+    )
+
+
+@pytest.mark.parametrize(
+    "candidate",
+    [
+        "return wf.vars.availableQty - wf.vars.reservedQty",
+        "return wf.vars.durationMs / 1000",
+        "return math.floor(wf.vars.durationSec / 60)",
+        "\n".join(
+            [
+                "local sum = 0",
+                "for _, item in ipairs(wf.vars.items) do",
+                "  sum = sum + item.quantity",
+                "end",
+                "return sum",
+            ]
+        ),
+        "\n".join(
+            [
+                "local sum = 0",
+                "for _, order in ipairs(wf.vars.orders) do",
+                "  sum = sum + (order.discountAmount or 0)",
+                "end",
+                "return sum",
+            ]
+        ),
+        "\n".join(
+            [
+                "local result = {}",
+                "for _, order in ipairs(wf.vars.orders) do",
+                "  local status = order.status",
+                "  result[status] = (result[status] or 0) + 1",
+                "end",
+                "return result",
+            ]
+        ),
+        "\n".join(
+            [
+                "local totalLength = 0",
+                "for _, tag in ipairs(wf.vars.tags) do",
+                "  totalLength = totalLength + #tag",
+                "end",
+                "return totalLength",
+            ]
+        ),
+    ],
+)
+def test_principle_evaluator_accepts_common_numeric_operations(candidate: str) -> None:
+    case = {
+        "prompt": "Do a numeric transformation.",
+        "context": {"wf": {"vars": {"availableQty": 5, "reservedQty": 2}}},
+        "archetype": "transformation",
+        "primary_output_mode": "raw_lua",
+        "input_roots": [
+            "wf.vars.availableQty",
+            "wf.vars.reservedQty",
+            "wf.vars.durationMs",
+            "wf.vars.durationSec",
+            "wf.vars.items",
+            "wf.vars.orders",
+            "wf.vars.tags",
+        ],
+        "risk_tags": ["numeric_transform"],
+        "expected_outputs": {"raw_lua": candidate},
+    }
+
+    report = evaluate_case_by_principles(case, candidate)
+
+    assert report["status"] == "pass"
+    assert any(
+        check["name"] == "numeric_operation_present" and check["status"] == "pass"
         for check in report["checks"]
     )
 

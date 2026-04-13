@@ -61,3 +61,39 @@ def test_semantic_judge_regression_pack_exists_with_review_buckets() -> None:
     assert any(case["bucket"] == "semantic_false_positive" for case in regressions)
     assert any(case["bucket"] == "ambiguous_spec" for case in regressions)
     assert any(case["id"] == "lua100-task-058" for case in regressions)
+
+
+def test_benchmark_contracts_are_explicit_for_ambiguous_tail_cases() -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    lua100_cases = json.loads((repo_root / "benchmark" / "lua_tasks_100_cases.json").read_text(encoding="utf-8"))["cases"]
+    additional_cases = json.loads(
+        (repo_root / "benchmark" / "lua_tasks_additional_200_cases.json").read_text(encoding="utf-8")
+    )["cases"]
+    by_id = {case["id"]: case for case in [*lua100_cases, *additional_cases]}
+
+    csv_prompt = by_id["lua100-task-046"]["prompt"]
+    assert "Обрежь пробелы" in csv_prompt
+    assert "пропусти пустые элементы" in csv_prompt
+
+    for case_id in ("lua-additional-200-task-154", "lua-additional-200-task-157"):
+        prompt = by_id[case_id]["prompt"]
+        assert "boolean-поле" in prompt
+        assert "иначе false" in prompt
+        assert "Можно обновлять исходные объекты" in prompt
+
+    assert "Можно обновлять исходные объекты" in by_id["lua-additional-200-task-156"]["prompt"]
+
+    for case_id in (
+        "lua-additional-200-task-222",
+        "lua-additional-200-task-223",
+        "lua-additional-200-task-224",
+        "lua-additional-200-task-225",
+        "lua-additional-200-task-226",
+        "lua-additional-200-task-227",
+        "lua-additional-200-task-228",
+        "lua-additional-200-task-229",
+        "lua-additional-200-task-230",
+    ):
+        prompt = by_id[case_id]["prompt"]
+        assert "Верни нормализованный массив" in prompt
+        assert "итоговый return должен быть самим массивом" in prompt

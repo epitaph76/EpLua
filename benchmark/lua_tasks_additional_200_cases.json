@@ -2226,9 +2226,9 @@
     },
     {
       "id": "lua-additional-200-task-154",
-      "title": "Для каждого файла в files добавь поле isImage = true, если extension равно png или jpg.",
+      "title": "Для каждого файла в files добавь boolean-поле isImage.",
       "category": "обогащение данных",
-      "prompt": "Для каждого файла в files добавь поле isImage = true, если extension равно png или jpg.",
+      "prompt": "Для каждого файла в files добавь boolean-поле isImage: true, если extension равно png или jpg, иначе false. Можно обновлять исходные объекты.",
       "context": {
         "wf": {
           "vars": {
@@ -2311,7 +2311,7 @@
       "id": "lua-additional-200-task-156",
       "title": "Для каждого сотрудника в staff добавь поле fullName = lastName .. \" \" .. firstName.",
       "category": "обогащение данных",
-      "prompt": "Для каждого сотрудника в staff добавь поле fullName = lastName .. \" \" .. firstName.",
+      "prompt": "Для каждого сотрудника в staff добавь поле fullName = lastName .. \" \" .. firstName. Можно обновлять исходные объекты.",
       "context": {
         "wf": {
           "vars": {
@@ -2347,9 +2347,9 @@
     },
     {
       "id": "lua-additional-200-task-157",
-      "title": "Для каждого токена в tokens добавь поле expired = true, если expiresAt меньше nowDate.",
+      "title": "Для каждого токена в tokens добавь boolean-поле expired.",
       "category": "обогащение данных",
-      "prompt": "Для каждого токена в tokens добавь поле expired = true, если expiresAt меньше nowDate.",
+      "prompt": "Для каждого токена в tokens добавь boolean-поле expired: true, если expiresAt меньше nowDate, иначе false. Можно обновлять исходные объекты.",
       "context": {
         "wf": {
           "vars": {
@@ -4582,7 +4582,7 @@
       "id": "lua-additional-200-task-222",
       "title": "Сделай так, чтобы поле items в order всегда было массивом.",
       "category": "нормализация массива",
-      "prompt": "Сделай так, чтобы поле items в order всегда было массивом.",
+      "prompt": "Сделай так, чтобы поле items в order всегда было массивом. Можно обновлять исходный объект order, но итоговый return должен быть самим массивом. Верни нормализованный массив items.",
       "context": {
         "wf": {
           "vars": {
@@ -4617,7 +4617,7 @@
       "id": "lua-additional-200-task-223",
       "title": "Сделай так, чтобы поле roles в user всегда было массивом строк.",
       "category": "нормализация типов",
-      "prompt": "Сделай так, чтобы поле roles в user всегда было массивом строк.",
+      "prompt": "Сделай так, чтобы поле roles в user всегда было массивом строк. Можно обновлять исходный объект user, но итоговый return должен быть самим массивом. Верни нормализованный массив roles.",
       "context": {
         "wf": {
           "vars": {
@@ -4649,7 +4649,7 @@
       "id": "lua-additional-200-task-224",
       "title": "Сделай так, чтобы field tags в article всегда был массивом.",
       "category": "нормализация массива",
-      "prompt": "Сделай так, чтобы field tags в article всегда был массивом.",
+      "prompt": "Сделай так, чтобы field tags в article всегда был массивом. Можно обновлять исходный объект article, но итоговый return должен быть самим массивом. Верни нормализованный массив tags.",
       "context": {
         "wf": {
           "vars": {
@@ -4683,7 +4683,7 @@
       "id": "lua-additional-200-task-225",
       "title": "Сделай так, чтобы attachments в message всегда были массивом.",
       "category": "нормализация массива",
-      "prompt": "Сделай так, чтобы attachments в message всегда были массивом.",
+      "prompt": "Сделай так, чтобы attachments в message всегда были массивом. Можно обновлять исходный объект message, но итоговый return должен быть самим массивом. Верни нормализованный массив attachments.",
       "context": {
         "wf": {
           "vars": {
@@ -4717,7 +4717,7 @@
       "id": "lua-additional-200-task-226",
       "title": "Сделай так, чтобы поле batches в importResult всегда было массивом.",
       "category": "нормализация массива",
-      "prompt": "Сделай так, чтобы поле batches в importResult всегда было массивом.",
+      "prompt": "Сделай так, чтобы поле batches в importResult всегда было массивом. Можно обновлять исходный объект importResult, но итоговый return должен быть самим массивом. Верни нормализованный массив batches.",
       "context": {
         "wf": {
           "vars": {
@@ -4751,7 +4751,7 @@
       "id": "lua-additional-200-task-227",
       "title": "Сделай так, чтобы поле errors в response всегда было массивом.",
       "category": "нормализация типов",
-      "prompt": "Сделай так, чтобы поле errors в response всегда было массивом.",
+      "prompt": "Сделай так, чтобы поле errors в response всегда было массивом. Можно обновлять исходный объект response, но итоговый return должен быть самим массивом. Верни нормализованный массив errors.",
       "context": {
         "wf": {
           "vars": {
@@ -4786,7 +4786,7 @@
       "id": "lua-additional-200-task-228",
       "title": "Сделай так, чтобы поле addresses в customer всегда было массивом.",
       "category": "нормализация массива",
-      "prompt": "Сделай так, чтобы поле addresses в customer всегда было массивом.",
+      "prompt": "Сделай так, чтобы поле addresses в customer всегда было массивом. Можно обновлять исходный объект customer, но итоговый return должен быть самим массивом. Верни нормализованный массив addresses.",
       "context": {
         "wf": {
           "vars": {
@@ -4820,7 +4820,7 @@
       "id": "lua-additional-200-task-229",
       "title": "Сделай так, чтобы поле lines в invoice всегда было массивом.",
       "category": "нормализация массива",
-      "prompt": "Сделай так, чтобы поле lines в invoice всегда было массивом.",
+      "prompt": "Сделай так, чтобы поле lines в invoice всегда было массивом. Можно обновлять исходный объект invoice, но итоговый return должен быть самим массивом. Верни нормализованный массив lines.",
       "context": {
         "wf": {
           "vars": {
@@ -4855,7 +4855,7 @@
       "id": "lua-additional-200-task-230",
       "title": "Сделай так, чтобы поле recipients в notification всегда было массивом.",
       "category": "нормализация массива",
-      "prompt": "Сделай так, чтобы поле recipients в notification всегда было массивом.",
+      "prompt": "Сделай так, чтобы поле recipients в notification всегда было массивом. Можно обновлять исходный объект notification, но итоговый return должен быть самим массивом. Верни нормализованный массив recipients.",
       "context": {
         "wf": {
           "vars": {

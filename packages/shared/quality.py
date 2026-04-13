@@ -91,10 +91,13 @@ class QualityOutcome:
     clarification_count: int
     output_mode: str | None = None
     archetype: str | None = None
+    final_candidate_source: str | None = None
+    final_candidate_iteration_index: int | None = None
+    critic_report_iteration_index: int | None = None
     debug: dict[str, object] | None = None
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "code": self.code,
             "validation_status": self.validation_status,
             "trace": list(self.trace),
@@ -106,3 +109,10 @@ class QualityOutcome:
             "archetype": self.archetype,
             "debug": self.debug,
         }
+        if self.final_candidate_source is not None:
+            payload["final_candidate_source"] = self.final_candidate_source
+        if self.final_candidate_iteration_index is not None:
+            payload["final_candidate_iteration_index"] = self.final_candidate_iteration_index
+        if self.critic_report_iteration_index is not None:
+            payload["critic_report_iteration_index"] = self.critic_report_iteration_index
+        return payload

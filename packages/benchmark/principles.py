@@ -7,7 +7,13 @@ from typing import Any
 from packages.orchestrator.domain_adapter import build_domain_prompt_package
 from packages.validators.core import run_validation_pipeline
 
-_UPPER_LITERAL_PATTERN = re.compile(r'"([A-Z_]+)"')
+_KEY_LITERAL_PATTERN = re.compile(r"""(?:\b(?:key|k)\s*~=\s*|\[\s*)["']([^"']+)["']""")
+_NUMERIC_OPERAND = r"(?:\([^()\n]+\)|#[A-Za-z_][A-Za-z0-9_\.]*(?:\[[^\]\n]+\])?|\b[A-Za-z_][A-Za-z0-9_\.]*(?:\[[^\]\n]+\])?|\d+(?:\.\d+)?)"
+_NUMERIC_EXPRESSION_PATTERN = re.compile(
+    rf"{_NUMERIC_OPERAND}\s*[+\-*/%^]\s*{_NUMERIC_OPERAND}"
+)
+_SINGLETON_ARRAY_WRAP_PATTERN = re.compile(r"(?:return|=)\s*\{\s*[^}\n]+\s*\}")
+_RETURN_EXPRESSION_PATTERN = re.compile(r"^\s*return(?:\s+(.*))?$", re.MULTILINE)
 
 
 def evaluate_case_by_principles(case: dict[str, Any], candidate: str) -> dict[str, object]:
@@ -98,21 +104,71 @@ def _evaluate_case_specific_checks(case: dict[str, Any], candidate: str) -> list
         checks.append(
             _boolean_check(
                 "type_normalization_guard",
-                "type(" in candidate and "return {" in candidate,
+                _has_type_normalization_guard(candidate),
                 "Normalization tasks must guard input type and wrap singleton values when needed.",
             )
         )
+        checks.append(_type_normalization_return_contract_check(case, candidate))
 
     if "numeric_transform" in risk_tags and case["primary_output_mode"] != "patch_mode":
         checks.append(
             _boolean_check(
                 "numeric_operation_present",
-                any(token in candidate for token in (" + 1", " * ", "tonumber(")),
+                _has_numeric_operation(candidate),
                 "Numeric transformation tasks should preserve an explicit numeric operation.",
             )
         )
 
     return checks
+
+
+def _has_numeric_operation(candidate: str) -> bool:
+    return bool(
+        "tonumber(" in candidate
+        or re.search(r"\bmath\.(?:floor|ceil|abs|min|max)\s*\(", candidate)
+        or _NUMERIC_EXPRESSION_PATTERN.search(candidate)
+    )
+
+
+def _has_type_normalization_guard(candidate: str) -> bool:
+    has_non_array_table_guard = bool(
+        "pairs(" in candidate and re.search(r'type\(\s*(?:key|k)\s*\)\s*~=\s*"number"', candidate)
+    )
+    has_scalar_type_guard = bool(re.search(r'type\(\s*\w+\s*\)\s*==\s*"(?:string|number|boolean)"', candidate))
+    return bool(
+        "type(" in candidate
+        and _SINGLETON_ARRAY_WRAP_PATTERN.search(candidate)
+        and (has_non_array_table_guard or has_scalar_type_guard)
+    )
+
+
+def _type_normalization_return_contract_check(case: dict[str, Any], candidate: str) -> dict[str, object]:
+    target_leaf = _target_leaf_from_input_roots(case.get("input_roots", []))
+    return _boolean_check(
+        "type_normalization_return_contract",
+        target_leaf is None or _candidate_returns_target_leaf(candidate, target_leaf),
+        "Normalization tasks must return the expected normalized output shape.",
+    )
+
+
+def _target_leaf_from_input_roots(input_roots: object) -> str | None:
+    if not isinstance(input_roots, list) or not input_roots:
+        return None
+    root = str(input_roots[0]).strip()
+    if not root:
+        return None
+    return root.split(".")[-1]
+
+
+def _candidate_returns_target_leaf(candidate: str, target_leaf: str) -> bool:
+    escaped = re.escape(target_leaf)
+    for match in _RETURN_EXPRESSION_PATTERN.finditer(candidate):
+        expression = (match.group(1) or "").strip()
+        if not expression:
+            continue
+        if re.search(rf"(?:^|[\.{{\s]){escaped}\b", expression):
+            return True
+    return False
 
 
 def _patch_key_check(expected_output: dict[str, Any], candidate: str) -> dict[str, object]:
@@ -131,7 +187,7 @@ def _patch_key_check(expected_output: dict[str, Any], candidate: str) -> dict[st
 
 
 def _field_whitelist_check(expected_output: object, candidate: str) -> dict[str, object]:
-    key_literals = set(_UPPER_LITERAL_PATTERN.findall(str(expected_output)))
+    key_literals = _extract_expected_key_literals(expected_output)
     return _boolean_check(
         "field_whitelist_preservation",
         _matches_field_whitelist_family(candidate, key_literals),
@@ -140,7 +196,7 @@ def _field_whitelist_check(expected_output: object, candidate: str) -> dict[str,
 
 
 def _field_value_clearing_check(expected_output: object, candidate: str) -> dict[str, object]:
-    key_literals = set(_UPPER_LITERAL_PATTERN.findall(str(expected_output)))
+    key_literals = _extract_expected_key_literals(expected_output)
     return _boolean_check(
         "field_value_clearing",
         all(_candidate_assigns_named_field(candidate, literal) for literal in key_literals),
@@ -148,14 +204,23 @@ def _field_value_clearing_check(expected_output: object, candidate: str) -> dict
     )
 
 
+def _extract_expected_key_literals(expected_output: object) -> set[str]:
+    return set(_KEY_LITERAL_PATTERN.findall(str(expected_output)))
+
+
 def _matches_field_whitelist_family(candidate: str, key_literals: set[str]) -> bool:
     if not key_literals:
         return False
 
-    if all(f'key ~= "{literal}"' in candidate for literal in key_literals):
+    if all(_candidate_compares_key_to_literal(candidate, literal) for literal in key_literals):
         return True
 
     return all(_candidate_assigns_named_field(candidate, literal) for literal in key_literals)
+
+
+def _candidate_compares_key_to_literal(candidate: str, literal: str) -> bool:
+    escaped = re.escape(literal)
+    return bool(re.search(rf'\b(?:key|k)\s*~=\s*"{escaped}"', candidate))
 
 
 def _candidate_assigns_named_field(candidate: str, literal: str) -> bool:

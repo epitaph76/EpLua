@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import time
 from collections import Counter
@@ -27,9 +28,17 @@ DATASETS = (
 )
 MODEL = os.environ.get("OLLAMA_MODEL", "qwen3-coder:480b-cloud")
 BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
-DEFAULT_OUTPUT_PATH = REPO_ROOT / "artifacts" / "benchmark_runs" / (
-    "5_progon_2026-04-13_qwen3-coder-480b-cloud_full-328-report.json"
-)
+
+
+def _default_output_path(*, now: datetime | None = None, model: str | None = None) -> Path:
+    generated_at = now or datetime.now(UTC)
+    model_slug = re.sub(r"[^A-Za-z0-9._-]+", "-", model or MODEL).strip("-") or "model"
+    return REPO_ROOT / "artifacts" / "benchmark_runs" / (
+        f"{generated_at.strftime('%Y%m%dT%H%M%SZ')}_{model_slug}_full-328-report.json"
+    )
+
+
+DEFAULT_OUTPUT_PATH = _default_output_path()
 OUTPUT_PATH = Path(os.environ.get("BENCHMARK_REPORT_PATH", str(DEFAULT_OUTPUT_PATH)))
 
 
@@ -81,12 +90,10 @@ def main() -> None:
             elapsed = round(time.perf_counter() - started, 2)
             candidate = str(result.get("code", ""))
             principle_evaluation = evaluate_case_by_principles(case, candidate)
-            expected = case["expected_outputs"][case["primary_output_mode"]]
             case_result.update(
                 {
                     "status": "ok",
                     "elapsed_s": elapsed,
-                    "exact_match": candidate.strip() == str(expected).strip(),
                     "result": result,
                     "principle_evaluation": principle_evaluation,
                 }
@@ -144,7 +151,6 @@ def _request_from_case(case: dict[str, Any]) -> dict[str, Any]:
 def _build_summary(cases: list[dict[str, Any]]) -> dict[str, Any]:
     validation_status_counts: Counter[str] = Counter()
     principle_status_counts: Counter[str] = Counter()
-    exact_match_count = 0
     completed_cases = 0
     error_cases = 0
 
@@ -160,15 +166,12 @@ def _build_summary(cases: list[dict[str, Any]]) -> dict[str, Any]:
         principle_status = case.get("principle_evaluation", {}).get("status")
         if principle_status:
             principle_status_counts[str(principle_status)] += 1
-        if case.get("exact_match"):
-            exact_match_count += 1
 
     return {
         "completed_cases": completed_cases,
         "error_cases": error_cases,
         "validation_status_counts": dict(sorted(validation_status_counts.items())),
         "principle_status_counts": dict(sorted(principle_status_counts.items())),
-        "exact_match_count": exact_match_count,
     }
 
 

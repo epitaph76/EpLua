@@ -1,15 +1,13 @@
 from __future__ import annotations
 
+import argparse
 import json
+import os
 from datetime import datetime, UTC
 from pathlib import Path
 
-REPORT_PATH = Path(
-    r"C:\project\luaMTS\artifacts\benchmark_runs\3_progon_2026-04-13_qwen3-coder-480b-cloud_full-128-report.json"
-)
-OUTPUT_PATH = Path(
-    r"C:\project\luaMTS\artifacts\benchmark_runs\3_progon_2026-04-13_qwen3-coder-480b-cloud_tail-triage.json"
-)
+REPO_ROOT = Path(__file__).resolve().parents[1]
+ARTIFACTS_DIR = REPO_ROOT / "artifacts" / "benchmark_runs"
 
 MANUAL_CASE_CLASSIFICATIONS: dict[str, dict[str, str]] = {
     "case-03-restbody-cleanup": {
@@ -99,26 +97,40 @@ MANUAL_CASE_CLASSIFICATIONS: dict[str, dict[str, str]] = {
 }
 
 
-def main() -> None:
-    report = json.loads(REPORT_PATH.read_text(encoding="utf-8"))
+def main(argv: list[str] | None = None) -> None:
+    report_path, output_path = _resolve_paths(argv)
+    build_tail_triage(report_path, output_path)
+
+
+def build_tail_triage(report_path: Path, output_path: Path) -> None:
+    report = json.loads(report_path.read_text(encoding="utf-8"))
     triaged_cases: list[dict[str, object]] = []
 
     for case in report["cases"]:
         result = case.get("result", {})
         validation_status = result.get("validation_status")
-        if validation_status not in {"bounded_failure", "validator_conflict"}:
+        principle_evaluation = case.get("principle_evaluation") or {}
+        principle_status = principle_evaluation.get("status")
+        if validation_status not in {"bounded_failure", "validator_conflict"} and principle_status != "fail":
             continue
 
-        manual = MANUAL_CASE_CLASSIFICATIONS.get(case["id"])
-        if manual is None:
-            continue
+        manual = MANUAL_CASE_CLASSIFICATIONS.get(case["id"]) or {
+            "primary_tail_class": "unclassified",
+            "semantic_review_bucket": "unclassified",
+            "notes": "No manual classification has been recorded for this tail case yet.",
+            "suggested_next_action": "Review validator, critic, principle checks, and final candidate metadata before changing generation prompts.",
+        }
 
         iterations = result.get("validator_report", {}).get("iterations", [])
         last_iteration = iterations[-1] if iterations else {}
         semantic_report = last_iteration.get("semantic_report", {})
         rule_report = last_iteration.get("rule_report", {})
         critic_report = result.get("critic_report") or {}
-        principle_evaluation = case.get("principle_evaluation") or {}
+        principle_failed_checks = [
+            check.get("name")
+            for check in principle_evaluation.get("checks", [])
+            if check.get("status") == "fail"
+        ]
 
         semantic_message = None
         if semantic_report.get("findings"):
@@ -134,7 +146,11 @@ def main() -> None:
                 "dataset": case["dataset"],
                 "validation_status": validation_status,
                 "critic_failure_class": critic_report.get("failure_class"),
-                "principle_status": principle_evaluation.get("status"),
+                "principle_status": principle_status,
+                "principle_failed_checks": principle_failed_checks,
+                "final_candidate_source": result.get("final_candidate_source"),
+                "final_candidate_iteration_index": result.get("final_candidate_iteration_index"),
+                "critic_report_iteration_index": result.get("critic_report_iteration_index"),
                 "primary_tail_class": manual["primary_tail_class"],
                 "semantic_review_bucket": manual["semantic_review_bucket"],
                 "semantic_message": semantic_message,
@@ -153,8 +169,8 @@ def main() -> None:
     payload = {
         "meta": {
             "generated_at": datetime.now(UTC).isoformat(),
-            "source_report": str(REPORT_PATH),
-            "output_path": str(OUTPUT_PATH),
+            "source_report": str(report_path),
+            "output_path": str(output_path),
         },
         "summary": {
             "triaged_case_count": len(triaged_cases),
@@ -164,7 +180,42 @@ def main() -> None:
         "cases": triaged_cases,
     }
 
-    OUTPUT_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _resolve_paths(argv: list[str] | None) -> tuple[Path, Path]:
+    parser = argparse.ArgumentParser(description="Build a tail triage JSON from a benchmark report.")
+    parser.add_argument("--report-path", type=Path, default=None)
+    parser.add_argument("--output-path", type=Path, default=None)
+    args = parser.parse_args(argv)
+
+    report_path = args.report_path or _env_path("BENCHMARK_REPORT_PATH") or _latest_report_path()
+    output_path = args.output_path or _env_path("BENCHMARK_TRIAGE_OUTPUT_PATH") or _default_output_path(report_path)
+    return report_path, output_path
+
+
+def _env_path(name: str) -> Path | None:
+    value = os.environ.get(name)
+    return Path(value) if value else None
+
+
+def _latest_report_path() -> Path:
+    candidates = sorted(
+        ARTIFACTS_DIR.glob("*full-*-report.json"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    if not candidates:
+        raise FileNotFoundError(f"No full benchmark reports found in {ARTIFACTS_DIR}.")
+    return candidates[0]
+
+
+def _default_output_path(report_path: Path) -> Path:
+    stem = report_path.stem
+    if stem.endswith("-report"):
+        stem = stem[: -len("-report")]
+    return report_path.with_name(f"{stem}_tail-triage.json")
 
 
 if __name__ == "__main__":
