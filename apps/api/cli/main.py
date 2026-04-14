@@ -118,6 +118,7 @@ def _add_runtime_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--num-ctx", type=int)
     parser.add_argument("--num-predict", type=int)
     parser.add_argument("--batch", type=int)
+    parser.add_argument("--temperature", type=float)
     parser.add_argument("--parallel", type=int)
     parser.add_argument("--allow-cloud-model", action="store_true")
     parser.add_argument("--language", choices=list(VALID_LANGUAGES), default=DEFAULT_LANGUAGE)
@@ -135,7 +136,7 @@ def _handle_generate(args: argparse.Namespace) -> int:
     status = response_payload.get("validation_status", "not_run")
     code = str(response_payload.get("code", ""))
     console.print(f"Status: {status}")
-    console.print(code)
+    _print_literal(console, code)
     _print_pipeline_debug(
         args=args,
         provided_context=provided_context,
@@ -232,8 +233,8 @@ def _handle_chat(args: argparse.Namespace) -> int:
                 return 0
             continue
 
-        task_text, inline_context = _split_inline_json_context(line)
-        raw_context = inline_context or _read_context(state.get("context"))
+        task_text = line
+        raw_context = _read_context(state.get("context"))
         input_roots = _explicit_input_roots(state)
         provided_context = _narrow_json_context(raw_context, input_roots)
         request_state = {
@@ -262,7 +263,7 @@ def _handle_chat(args: argparse.Namespace) -> int:
 
         status = response_payload.get("validation_status", "not_run")
         console.print(f"Status: {status}")
-        console.print(str(response_payload.get("code", "")))
+        _print_literal(console, str(response_payload.get("code", "")))
         _print_pipeline_debug(
             args=task_args,
             provided_context=provided_context,
@@ -288,6 +289,7 @@ def _chat_state_from_args(args: argparse.Namespace) -> dict[str, Any]:
         "num_ctx": getattr(args, "num_ctx", None),
         "num_predict": getattr(args, "num_predict", None),
         "batch": getattr(args, "batch", None),
+        "temperature": getattr(args, "temperature", None),
         "parallel": getattr(args, "parallel", None),
         "allow_cloud_model": getattr(args, "allow_cloud_model", False),
         "with_api": True,
@@ -306,7 +308,7 @@ def _apply_chat_command(state: dict[str, Any], line: str, console: Console) -> b
         console.print("bye")
         return True
     if command == "/help":
-        console.print("Slash commands: /debug, /release, /lang <ru|en>, /model <tag>, /num-ctx <n>, /num-predict <n>, /batch <n>, /parallel <n>, /roots <wf.path...>, /allow-cloud on|off, /with-api, /without-api, /context <json-or-path>, /plan, /status, /exit")
+        console.print("Slash commands: /debug, /release, /lang <ru|en>, /model <tag>, /num-ctx <n>, /num-predict <n>, /batch <n>, /temperature <n>, /parallel <n>, /roots <wf.path...>, /allow-cloud on|off, /with-api, /without-api, /context <json-or-path>, /plan, /status, /exit")
         console.print(f"History: use arrow up/down when readline is available; saved to {DEFAULT_HISTORY_PATH}")
         return False
     if command == "/debug":
@@ -321,11 +323,27 @@ def _apply_chat_command(state: dict[str, Any], line: str, console: Console) -> b
                 "num_ctx": None,
                 "num_predict": None,
                 "batch": None,
+                "temperature": None,
                 "parallel": None,
                 "allow_cloud_model": False,
                 "with_api": True,
             }
         )
+        _print_chat_status(state, console)
+        return False
+    if command == "/temperature":
+        if len(values) != 1:
+            console.print("usage: /temperature <non-negative-number>")
+            return False
+        try:
+            parsed_value = float(values[0])
+        except ValueError:
+            console.print("usage: /temperature <non-negative-number>")
+            return False
+        if parsed_value < 0:
+            console.print("usage: /temperature <non-negative-number>")
+            return False
+        state["temperature"] = parsed_value
         _print_chat_status(state, console)
         return False
     if command == "/model":
@@ -419,7 +437,7 @@ def _run_feedback_attempt(
         if isinstance(critic_report, dict):
             message = critic_report.get("message")
             if message:
-                console.print(f"Critic: {message}")
+                _print_literal(console, f"Critic: {message}")
 
     feedback = _read_chat_input("feedback> ").strip()
     if not feedback:
@@ -443,7 +461,7 @@ def _run_feedback_attempt(
     )
     status = retry_payload.get("validation_status", "not_run")
     console.print(f"Status: {status}")
-    console.print(str(retry_payload.get("code", "")))
+    _print_literal(console, str(retry_payload.get("code", "")))
     _print_pipeline_debug(
         args=feedback_args,
         provided_context=provided_context,
@@ -484,36 +502,36 @@ def _print_pipeline_debug(
         console.print("trace unavailable")
 
     console.print("Request Payload:")
-    console.print(_pretty_json(_debug_request_payload(args, provided_context)))
+    _print_literal(console, _pretty_json(_debug_request_payload(args, provided_context)))
 
     debug_payload = response_payload.get("debug")
     if isinstance(debug_payload, dict):
         console.print("Prompt Package:")
-        console.print(_pretty_json(debug_payload.get("prompt_package")))
+        _print_literal(console, _pretty_json(debug_payload.get("prompt_package")))
 
         console.print("Pipeline Layers:")
-        console.print(_pretty_json(debug_payload.get("pipeline_layers", [])))
+        _print_literal(console, _pretty_json(debug_payload.get("pipeline_layers", [])))
 
         console.print("Agent Layers:")
-        console.print(_format_agent_layers(debug_payload))
+        _print_literal(console, _format_agent_layers(debug_payload))
 
         console.print("Agent Layer Calls:")
-        console.print(_pretty_json(debug_payload.get("agent_layer_calls", [])))
+        _print_literal(console, _pretty_json(debug_payload.get("agent_layer_calls", [])))
 
         console.print("Model Calls:")
-        console.print(_pretty_json(debug_payload.get("model_calls", [])))
+        _print_literal(console, _pretty_json(debug_payload.get("model_calls", [])))
 
         console.print("Validation Passes:")
-        console.print(_pretty_json(debug_payload.get("validation_passes", [])))
+        _print_literal(console, _pretty_json(debug_payload.get("validation_passes", [])))
     else:
         console.print("Debug Payload:")
         console.print("debug payload unavailable")
 
     console.print("Critic Report:")
-    console.print(_pretty_json(response_payload.get("critic_report")))
+    _print_literal(console, _pretty_json(response_payload.get("critic_report")))
 
     console.print("Validator Report:")
-    console.print(_pretty_json(response_payload.get("validator_report")))
+    _print_literal(console, _pretty_json(response_payload.get("validator_report")))
 
 
 def _format_agent_layers(debug_payload: dict[str, object]) -> str:
@@ -555,6 +573,10 @@ def _debug_request_payload(args: argparse.Namespace, provided_context: str | Non
 
 def _pretty_json(payload: object) -> str:
     return json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+
+
+def _print_literal(console: Console, value: object) -> None:
+    console.print(str(value), markup=False)
 
 
 def _handle_doctor(args: argparse.Namespace) -> int:
@@ -649,6 +671,7 @@ def _validate_generate_args(args: argparse.Namespace) -> None:
             ("--num-ctx", args.num_ctx),
             ("--num-predict", args.num_predict),
             ("--batch", args.batch),
+            ("--temperature", args.temperature),
             ("--parallel", args.parallel),
         ):
             if value is not None:
@@ -679,25 +702,55 @@ def _generate_without_api(args: argparse.Namespace, provided_context: str | None
     prompt_parts = [args.task]
     if provided_context:
         prompt_parts.append(provided_context)
+    prompt = "\n\n".join(prompt_parts)
     options = _runtime_options_from_args(args)
+    ollama_url = f"{args.ollama_base_url.rstrip('/')}/api/generate"
+    request_payload = {
+        "model": _effective_model(args.model),
+        "prompt": prompt,
+        "stream": False,
+        "options": options.to_ollama_options(),
+    }
     with httpx.Client() as client:
         response = client.post(
-            f"{args.ollama_base_url.rstrip('/')}/api/generate",
-            json={
-                "model": _effective_model(args.model),
-                "prompt": "\n\n".join(prompt_parts),
-                "stream": False,
-                "options": options.to_ollama_options(),
-            },
+            ollama_url,
+            json=request_payload,
             timeout=DEFAULT_TIMEOUT,
         )
         response.raise_for_status()
         payload = response.json()
-        return {
-            "code": str(payload["response"]),
-            "validation_status": "not_run",
-            "trace": ["request_received", "direct_ollama", "response_ready"],
+    raw_response = str(payload["response"])
+    response_payload: dict[str, object] = {
+        "code": raw_response,
+        "validation_status": "not_run",
+        "trace": ["request_received", "direct_ollama", "response_ready"],
+    }
+    if args.mode == "debug" or bool(getattr(args, "debug_trace", False)):
+        response_payload["debug"] = {
+            "prompt_package": {
+                "prompt": prompt,
+            },
+            "pipeline_layers": [
+                {
+                    "stage": "direct_ollama",
+                    "kind": "llm_prompt",
+                    "status": "completed",
+                    "agent": "direct_ollama",
+                },
+            ],
+            "agent_layer_calls": [],
+            "model_calls": [
+                {
+                    "phase": "generation",
+                    "agent": "direct_ollama",
+                    "url": ollama_url,
+                    "request_payload": request_payload,
+                    "raw_response": raw_response,
+                }
+            ],
+            "validation_passes": [],
         }
+    return response_payload
 
 
 def _api_request_payload(args: argparse.Namespace, provided_context: str | None) -> dict[str, object]:
@@ -723,8 +776,8 @@ def _api_request_payload(args: argparse.Namespace, provided_context: str | None)
     return payload
 
 
-def _runtime_options_payload_from_args(args: argparse.Namespace) -> dict[str, int] | None:
-    if args.num_ctx is None and args.num_predict is None and args.batch is None:
+def _runtime_options_payload_from_args(args: argparse.Namespace) -> dict[str, int | float] | None:
+    if args.num_ctx is None and args.num_predict is None and args.batch is None and args.temperature is None:
         return None
     options = _runtime_options_from_args(args)
     return options.to_ollama_options()
@@ -736,6 +789,7 @@ def _runtime_options_from_args(args: argparse.Namespace) -> RuntimeOptions:
         num_ctx=args.num_ctx or defaults.num_ctx,
         num_predict=args.num_predict or defaults.num_predict,
         batch=args.batch or defaults.batch,
+        temperature=defaults.temperature if args.temperature is None else args.temperature,
     )
 
 
@@ -750,24 +804,6 @@ def _read_context(raw_context: str | None) -> str | None:
     except json.JSONDecodeError as exc:
         raise CliError("--context must be inline JSON or a path to a JSON file.") from exc
     return raw_context
-
-
-def _split_inline_json_context(line: str) -> tuple[str, str | None]:
-    decoder = json.JSONDecoder()
-    for index, char in enumerate(line):
-        if char not in "{[":
-            continue
-        candidate = line[index:].strip()
-        try:
-            _payload, end_index = decoder.raw_decode(candidate)
-        except json.JSONDecodeError:
-            continue
-        if candidate[end_index:].strip():
-            continue
-        task_text = line[:index].strip()
-        if task_text:
-            return task_text, candidate
-    return line, None
 
 
 def _explicit_input_roots(state: dict[str, Any]) -> list[str] | None:
@@ -953,7 +989,7 @@ def _local_asset_paths() -> list[tuple[str, Path]]:
 def _params_label(options: RuntimeOptions, parallel: int) -> str:
     return (
         f"num_ctx={options.num_ctx} num_predict={options.num_predict} "
-        f"batch={options.batch} parallel={parallel}"
+        f"batch={options.batch} temperature={options.temperature:g} parallel={parallel}"
     )
 
 

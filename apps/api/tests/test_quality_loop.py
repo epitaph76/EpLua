@@ -388,8 +388,8 @@ def test_planner_agent_accepts_compact_response_keys() -> None:
     assert result.task_spec.edge_cases == ("empty_array",)
 
 
-def test_generation_service_uses_simplified_agentic_contour_without_validation_loop() -> None:
-    model_adapter = AgenticPromptModelAdapter(
+def test_generation_service_uses_generator_only_lowcode_contract_without_agentic_layers() -> None:
+    model_adapter = ScriptedModelAdapter(
         [
             "```lua\nreturn wf.vars.emails[#wf.vars.emails]\n```",
         ]
@@ -422,8 +422,6 @@ def test_generation_service_uses_simplified_agentic_contour_without_validation_l
     assert result["stop_reason"] == "not_run"
     assert result["trace"] == [
         "request_received",
-        "planner",
-        "prompter",
         "generation",
         "response_ready",
     ]
@@ -433,26 +431,40 @@ def test_generation_service_uses_simplified_agentic_contour_without_validation_l
     assert result["clarification_count"] == 0
     assert result["output_mode"] == "raw_lua"
     assert result["archetype"] == "simple_extraction"
-    assert [call["agent"] for call in model_adapter.agent_calls] == [
-        "planner",
-        "prompter",
-        "generator",
-    ]
+    assert model_adapter.agent_calls == []
+    assert len(model_adapter.prompts) == 1
 
     debug = result["debug"]
     assert debug is not None
+    generator_prompt = model_adapter.prompts[0]
+    assert debug["prompt_package"]["prompt"] == generator_prompt
+    assert "agent_prompt" not in debug["prompt_package"]
+    assert "Ты генерируешь Lua 5.5 выражения/скрипты для LowCode." in generator_prompt
+    assert "Верни только JSON object." in generator_prompt
+    assert "Каждое значение, которое содержит Lua, должно быть строкой в формате lua{<Lua код>}lua." in generator_prompt
+    assert "Lua внутри lua{...}lua должен возвращать значение через return." in generator_prompt
+    assert "Не записывай результат в wf.vars.<name>, если пользователь явно не попросил сохранить его в LowCode-переменную." in generator_prompt
+    assert "Все LowCode-переменные лежат в wf.vars." in generator_prompt
+    assert "Переменные, которые схема получает при запуске из variables, лежат в wf.initVariables." in generator_prompt
+    assert "использовать JsonPath;" in generator_prompt
+    assert "Задача:\nGet the last email from the list." in generator_prompt
+    assert 'Контекст:\n{"wf": {"vars": {"emails": ["user1@example.com", "user2@example.com"]}}}' in generator_prompt
+    assert "SYSTEM:" not in generator_prompt
+    assert "USER:" not in generator_prompt
+    assert "Task archetype:" not in generator_prompt
+    assert "Mode-specific rules:" not in generator_prompt
+    assert "Prompter agent additions:" not in generator_prompt
+    assert "Risk hints:" not in generator_prompt
+    assert "План:" not in generator_prompt
     assert [layer["stage"] for layer in debug["pipeline_layers"]] == [
-        "input_normalization",
-        "planner",
-        "prompter",
         "generator",
     ]
+    assert debug["agent_layer_calls"] == []
     assert debug["model_calls"] == [
         {
             "phase": "generation",
             "agent": "generator",
             "prompt": debug["prompt_package"]["prompt"],
-            "messages": model_adapter.agent_calls[-1]["messages"],
             "raw_response": result["code"],
         }
     ]

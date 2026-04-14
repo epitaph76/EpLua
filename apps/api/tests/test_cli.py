@@ -53,6 +53,23 @@ class SequencedHttpClient(RecordingHttpClient):
         return FakeResponse(self._responses.pop(0))
 
 
+def test_cli_literal_print_preserves_lua_length_index_markup() -> None:
+    class RecordingConsole:
+        def __init__(self) -> None:
+            self.calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+        def print(self, *objects: object, **kwargs: object) -> None:
+            self.calls.append((objects, kwargs))
+
+    console = RecordingConsole()
+
+    cli_main._print_literal(console, "return wf.vars.emails[#wf.vars.emails]")
+
+    assert console.calls == [
+        (("return wf.vars.emails[#wf.vars.emails]",), {"markup": False})
+    ]
+
+
 def test_cli_generate_release_calls_api_and_writes_report(tmp_path, monkeypatch, capsys) -> None:
     context_path = tmp_path / "context.json"
     context_path.write_text('{"wf":{"vars":{"emails":["a@example.com"]}}}', encoding="utf-8")
@@ -283,12 +300,16 @@ def test_cli_chat_accepts_plain_text_task(monkeypatch, capsys) -> None:
     }
 
 
-def test_cli_chat_splits_inline_json_context_without_semantic_overrides(monkeypatch, capsys) -> None:
+def test_cli_chat_keeps_inline_json_inside_task_text(monkeypatch, capsys) -> None:
     http_client = RecordingHttpClient()
     monkeypatch.setattr(cli_main.httpx, "Client", lambda: http_client)
+    task_text = (
+        'Из полученного списка email получи последний. '
+        '{"wf":{"vars":{"emails":["user1@example.com","user2@example.com","user3@example.com"]}}}'
+    )
     commands = iter(
         [
-            'Из полученного списка email получи последний. {"wf":{"vars":{"emails":["user1@example.com","user2@example.com","user3@example.com"]}}}',
+            task_text,
             "/exit",
         ]
     )
@@ -299,8 +320,8 @@ def test_cli_chat_splits_inline_json_context_without_semantic_overrides(monkeypa
     assert exit_code == 0
     assert "return wf.vars.emails[#wf.vars.emails]" in capsys.readouterr().out
     assert http_client.posts[0]["json"] == {
-        "task_text": "Из полученного списка email получи последний.",
-        "provided_context": '{"wf":{"vars":{"emails":["user1@example.com","user2@example.com","user3@example.com"]}}}',
+        "task_text": task_text,
+        "provided_context": None,
         "debug": False,
         "mode": "release",
     }
@@ -330,7 +351,7 @@ def test_cli_chat_context_command_keeps_raw_context_for_next_task(monkeypatch, c
         "debug": False,
         "mode": "release",
     }
-    assert output.count("Mode: release | Lang: ru | Model: qwen2.5-coder:3b | Path: with-api | Allow cloud: False | Params: num_ctx=4096 num_predict=256 batch=1 parallel=1") == 1
+    assert output.count("Mode: release | Lang: ru | Model: qwen2.5-coder:3b | Path: with-api | Allow cloud: False | Params: num_ctx=4096 num_predict=256 batch=1 temperature=0.8 parallel=1") == 1
 
 
 def test_cli_chat_slash_commands_switch_debug_cloud_model(monkeypatch, capsys) -> None:
@@ -438,6 +459,75 @@ def test_cli_chat_debug_prints_full_pipeline(monkeypatch, capsys) -> None:
     assert "GENERATOR SYSTEM PROMPT" in output
     assert "Validation Passes:" in output
     assert "Validator Report:" in output
+
+
+def test_cli_generate_without_api_debug_prints_ollama_request_payload(monkeypatch, capsys) -> None:
+    http_client = SequencedHttpClient(
+        [
+            {
+                "response": '{"result":"lua{return wf.vars.emails}lua"}',
+            }
+        ]
+    )
+    monkeypatch.setattr(cli_main.httpx, "Client", lambda: http_client)
+
+    exit_code = cli_main.main(
+        [
+            "generate",
+            "--without-api",
+            "--mode",
+            "debug",
+            "--task",
+            "Из полученного списка email получи последний",
+            "--context",
+            '{"wf":{"vars":{"emails":["user1@example.com","user2@example.com"]}}}',
+        ]
+    )
+
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert "Prompt Package:" in output
+    assert "Model Calls:" in output
+    assert "http://127.0.0.1:11434/api/generate" in output
+    assert '"model": "qwen2.5-coder:3b"' in output
+    assert '"num_ctx": 4096' in output
+    assert '"num_predict": 256' in output
+    assert '"batch": 1' in output
+    assert '"temperature": 0.8' in output
+    assert "Из полученного списка email получи последний" in output
+    assert "wf" in output
+    assert "vars" in output
+    assert "emails" in output
+    assert "user1@example.com" in output
+    assert "user2@example.com" in output
+    assert "debug payload unavailable" not in output
+
+
+def test_cli_chat_temperature_command_updates_status_and_direct_ollama_payload(monkeypatch, capsys) -> None:
+    http_client = SequencedHttpClient(
+        [
+            {
+                "response": '{"result":"lua{return wf.vars.emails}lua"}',
+            }
+        ]
+    )
+    monkeypatch.setattr(cli_main.httpx, "Client", lambda: http_client)
+    commands = iter(
+        [
+            "/debug",
+            "/without-api",
+            "/temperature 0.8",
+            "Верни emails.",
+            "/exit",
+        ]
+    )
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(commands))
+
+    assert cli_main.main(["chat"]) == 0
+
+    output = capsys.readouterr().out
+    assert "temperature=0.8" in output
+    assert http_client.posts[0]["json"]["options"]["temperature"] == 0.8
 
 
 def test_cli_chat_lang_command_updates_status_and_payload(monkeypatch, capsys) -> None:
@@ -556,7 +646,7 @@ def test_cli_chat_asks_for_feedback_after_bounded_failure(monkeypatch, capsys) -
     assert "return wf.vars.emails[#wf.vars.emails]" in output
     assert len(http_client.posts) == 2
     assert http_client.posts[1]["json"]["task_text"] == (
-        "Из полученного списка email получи последний.\n\n"
+        'Из полученного списка email получи последний. {"wf":{"vars":{"emails":["user1@example.com","user2@example.com","user3@example.com"]}}}\n\n'
         "Обратная связь пользователя после неудачной попытки: Нужен последний элемент массива, не весь массив.\n"
         "Предыдущий кандидат: return wf.vars.emails"
     )
@@ -613,8 +703,8 @@ def test_cli_chat_reprints_status_after_parameter_changes(monkeypatch, capsys) -
     assert cli_main.main(["chat"]) == 0
 
     output = capsys.readouterr().out
-    assert "Mode: debug | Lang: ru | Model: qwen2.5-coder:3b | Path: with-api | Allow cloud: False | Params: num_ctx=4096 num_predict=256 batch=1 parallel=1" in output
-    assert "Mode: debug | Lang: ru | Model: gpt-oss:20b-cloud | Path: with-api | Allow cloud: True | Params: num_ctx=4096 num_predict=512 batch=1 parallel=1" in output
+    assert "Mode: debug | Lang: ru | Model: qwen2.5-coder:3b | Path: with-api | Allow cloud: False | Params: num_ctx=4096 num_predict=256 batch=1 temperature=0.8 parallel=1" in output
+    assert "Mode: debug | Lang: ru | Model: gpt-oss:20b-cloud | Path: with-api | Allow cloud: True | Params: num_ctx=4096 num_predict=512 batch=1 temperature=0.8 parallel=1" in output
 
 
 def test_cli_chat_context_command_does_not_reprint_status(monkeypatch, capsys) -> None:
@@ -631,7 +721,7 @@ def test_cli_chat_context_command_does_not_reprint_status(monkeypatch, capsys) -
     assert cli_main.main(["chat"]) == 0
 
     output = capsys.readouterr().out
-    assert output.count("Mode: release | Lang: ru | Model: qwen2.5-coder:3b | Path: with-api | Allow cloud: False | Params: num_ctx=4096 num_predict=256 batch=1 parallel=1") == 1
+    assert output.count("Mode: release | Lang: ru | Model: qwen2.5-coder:3b | Path: with-api | Allow cloud: False | Params: num_ctx=4096 num_predict=256 batch=1 temperature=0.8 parallel=1") == 1
 
 
 def test_cli_chat_roots_command_narrows_json_context(monkeypatch, capsys) -> None:
@@ -640,7 +730,8 @@ def test_cli_chat_roots_command_narrows_json_context(monkeypatch, capsys) -> Non
     commands = iter(
         [
             "/roots wf.vars.emails",
-            'Верни последний email. {"wf":{"vars":{"emails":["a@example.com"],"phones":["1"]},"initVariables":{"token":"secret"}}}',
+            '/context {"wf":{"vars":{"emails":["a@example.com"],"phones":["1"]},"initVariables":{"token":"secret"}}}',
+            "Верни последний email.",
             "/exit",
         ]
     )

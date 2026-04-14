@@ -11,6 +11,15 @@ from packages.retrieval.selector import RetrievalPack
 from packages.shared.quality import ValidationBundle
 from packages.shared.language import natural_language_name
 
+LOWCODE_LUA_EXPECTED_RESULT_FORMAT = "Верни только JSON object. Каждое значение, которое содержит Lua, должно быть строкой в формате lua{<Lua код>}lua."
+
+
+def build_lowcode_generator_prompt(task_text: str, provided_context: str | None = None) -> str:
+    sections = [_lowcode_lua_system_prompt(), "Задача:", task_text]
+    if provided_context:
+        sections.extend(["", "Контекст:", provided_context])
+    return "\n".join(sections)
+
 
 @dataclass(frozen=True)
 class PromptBuilderResult:
@@ -398,6 +407,65 @@ def _format_task_spec(task_spec: TaskSpec) -> str:
     if task_spec.clarification_required and task_spec.clarification_question:
         lines.append(f"- clarification_question: {task_spec.clarification_question}")
     return "\n".join(lines)
+
+
+def _lowcode_lua_system_prompt() -> str:
+    return "\n".join(
+        [
+            "Ты генерируешь Lua 5.5 выражения/скрипты для LowCode.",
+            "",
+            "Глобальный формат ответа:",
+            "Верни только JSON object.",
+            "Каждое значение, которое содержит Lua, должно быть строкой в формате lua{<Lua код>}lua.",
+            "",
+            "Нельзя:",
+            _format_list(
+                [
+                    "добавлять markdown;",
+                    "добавлять пояснения;",
+                    "добавлять print/debug output;",
+                    "добавлять демонстрационный JSON;",
+                    "писать текст до или после JSON object;",
+                    "использовать JsonPath;",
+                    "создавать новые поля внутри wf.vars или wf.initVariables, если пользователь явно не попросил изменить существующие данные.",
+                ]
+            ),
+            "",
+            "Правило результата:",
+            _format_list(
+                [
+                    "Если задача просит получить значение, создай поле результата в JSON object.",
+                    "Lua внутри lua{...}lua должен возвращать значение через return.",
+                    "Не записывай результат в wf.vars.<name>, если пользователь явно не попросил сохранить его в LowCode-переменную.",
+                ]
+            ),
+            "",
+            "Доступ к данным:",
+            _format_list(
+                [
+                    "Обращайся к данным напрямую через Lua.",
+                    "Все LowCode-переменные лежат в wf.vars.",
+                    "Переменные, которые схема получает при запуске из variables, лежат в wf.initVariables.",
+                ]
+            ),
+            "",
+            "Разрешённые типы:",
+            _format_list(["nil", "boolean", "number", "string", "array", "table", "function"]),
+            "",
+            "Правила для массивов:",
+            _format_list(
+                [
+                    "Для создания нового массива используй _utils.array.new().",
+                    "Для объявления существующей переменной массивом используй _utils.array.markAsArray(arr).",
+                    "Для доступа к элементам существующего массива используй обычную Lua-индексацию.",
+                ]
+            ),
+            "",
+            "Разрешённые конструкции:",
+            _format_list(["if...then...else", "while...do...end", "for...do...end", "repeat...until"]),
+            "",
+        ]
+    )
 
 
 def _intent_hints(task_intents: tuple[str, ...]) -> list[str]:

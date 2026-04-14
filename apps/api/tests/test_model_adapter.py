@@ -233,6 +233,7 @@ def test_ollama_adapter_calls_local_generate_endpoint(monkeypatch) -> None:
                     "num_ctx": 4096,
                     "num_predict": 256,
                     "batch": 1,
+                    "temperature": 0.8,
                 },
             },
             "timeout": 180.0,

@@ -8,7 +8,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.append(str(_REPO_ROOT))
 
-from packages.orchestrator.domain_adapter import DomainPromptPackage, build_domain_prompt_package  # noqa: E402
+from packages.orchestrator.prompter import LOWCODE_LUA_EXPECTED_RESULT_FORMAT, build_lowcode_generator_prompt  # noqa: E402
 from packages.shared.language import DEFAULT_LANGUAGE  # noqa: E402
 
 
@@ -28,7 +28,7 @@ class GenerationService:
         debug: bool = False,
         mode: str = RELEASE_MODE,
         model: str | None = None,
-        runtime_options: dict[str, int] | RuntimeOptions | None = None,
+        runtime_options: dict[str, int | float] | RuntimeOptions | None = None,
         allow_cloud_model: bool = False,
         language: str = DEFAULT_LANGUAGE,
     ) -> dict[str, object]:
@@ -38,26 +38,14 @@ class GenerationService:
             runtime_options=runtime_options,
             allow_cloud_model=allow_cloud_model,
         )
-        agent_runner = getattr(model_adapter, "generate_from_agent", None)
-        prompt_package = build_domain_prompt_package(
-            task_text,
-            provided_context,
-            archetype=archetype,
-            output_mode=output_mode,
-            input_roots=input_roots,
-            risk_tags=risk_tags,
-            language=language,
-            agent_runner=agent_runner if callable(agent_runner) else None,
-        )
-        code = self._generate_from_prompt_package(model_adapter, prompt_package)
+        prompt = build_lowcode_generator_prompt(task_text, provided_context)
+        code = model_adapter.generate_from_prompt(prompt)
         return {
             "code": code,
             "validation_status": "not_run",
             "stop_reason": "not_run",
             "trace": [
                 "request_received",
-                "planner",
-                "prompter",
                 "generation",
                 "response_ready",
             ],
@@ -65,77 +53,35 @@ class GenerationService:
             "critic_report": None,
             "repair_count": 0,
             "clarification_count": 0,
-            "output_mode": prompt_package.output_mode,
-            "archetype": prompt_package.archetype,
-            "debug": self._build_debug_payload(prompt_package, code) if debug else None,
+            "output_mode": output_mode,
+            "archetype": archetype,
+            "debug": self._build_debug_payload(prompt, code) if debug else None,
         }
-
-    def _generate_from_prompt_package(
-        self,
-        model_adapter: OllamaModelAdapter,
-        prompt_package: DomainPromptPackage,
-    ) -> str:
-        generator = getattr(model_adapter, "generate_from_agent", None)
-        if callable(generator):
-            return str(generator(prompt_package.agent_prompt))
-        return model_adapter.generate_from_prompt(prompt_package.prompt)
 
     def _build_debug_payload(
         self,
-        prompt_package: DomainPromptPackage,
+        prompt: str,
         raw_response: str,
     ) -> dict[str, object]:
         return {
             "prompt_package": {
-                "prompt": prompt_package.prompt,
-                "archetype": prompt_package.archetype,
-                "output_mode": prompt_package.output_mode,
-                "expected_result_format": prompt_package.expected_result_format,
-                "allowed_data_roots": list(prompt_package.allowed_data_roots),
-                "forbidden_patterns": list(prompt_package.forbidden_patterns),
-                "risk_tags": list(prompt_package.risk_tags),
-                "task_intents": list(prompt_package.task_intents),
-                "clarification_required": prompt_package.clarification_required,
-                "task_spec": prompt_package.task_spec.to_dict(),
-                "planner_result": prompt_package.planner_result.to_debug_dict(),
-                "prompt_builder_result": prompt_package.prompt_builder_result.to_debug_dict(),
-                "agent_prompt": {
-                    "agent": prompt_package.agent_prompt.agent_name,
-                    "messages": prompt_package.agent_prompt.to_messages_payload(),
-                },
+                "prompt": prompt,
+                "expected_result_format": LOWCODE_LUA_EXPECTED_RESULT_FORMAT,
             },
             "pipeline_layers": [
                 {
-                    "stage": "input_normalization",
-                    "kind": "deterministic",
-                    "status": "completed",
-                },
-                {
-                    "stage": "planner",
-                    "kind": "agent_layer",
-                    "status": "completed",
-                    "details": prompt_package.planner_result.to_debug_dict(),
-                },
-                {
-                    "stage": "prompter",
-                    "kind": "agent_layer",
-                    "status": "completed",
-                    "details": prompt_package.prompt_builder_result.to_debug_dict(),
-                },
-                {
                     "stage": "generator",
-                    "kind": "llm_agent",
+                    "kind": "llm_prompt",
                     "status": "completed",
-                    "agent": prompt_package.agent_prompt.agent_name,
+                    "agent": "generator",
                 },
             ],
-            "agent_layer_calls": list(prompt_package.agent_layer_calls),
+            "agent_layer_calls": [],
             "model_calls": [
                 {
                     "phase": "generation",
-                    "agent": prompt_package.agent_prompt.agent_name,
-                    "prompt": prompt_package.prompt,
-                    "messages": prompt_package.agent_prompt.to_messages_payload(),
+                    "agent": "generator",
+                    "prompt": prompt,
                     "raw_response": raw_response,
                 }
             ],
@@ -147,7 +93,7 @@ class GenerationService:
         *,
         mode: str,
         model: str | None,
-        runtime_options: dict[str, int] | RuntimeOptions | None,
+        runtime_options: dict[str, int | float] | RuntimeOptions | None,
         allow_cloud_model: bool,
     ) -> OllamaModelAdapter:
         normalized_mode = normalize_mode(mode)

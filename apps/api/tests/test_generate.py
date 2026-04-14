@@ -21,7 +21,7 @@ class FakeGenerationService:
         debug: bool = False,
         mode: str = "release",
         model: str | None = None,
-        runtime_options: dict[str, int] | None = None,
+        runtime_options: dict[str, int | float] | None = None,
         allow_cloud_model: bool = False,
         language: str = "ru",
     ) -> dict[str, object]:
@@ -195,7 +195,7 @@ class RuntimePolicyGenerationService:
         assert debug is True
         assert mode == "debug"
         assert model == "qwen2.5-coder:7b"
-        assert runtime_options == {"num_ctx": 2048, "num_predict": 128, "batch": 1}
+        assert runtime_options == {"num_ctx": 2048, "num_predict": 128, "batch": 1, "temperature": 0.8}
         assert allow_cloud_model is False
         assert language == "ru"
         return {

@@ -13,6 +13,7 @@ DEFAULT_NUM_CTX = 4096
 DEFAULT_NUM_PREDICT = 256
 DEFAULT_BATCH = 1
 DEFAULT_PARALLEL = 1
+DEFAULT_TEMPERATURE = 0.8
 RELEASE_MODE = "release"
 DEBUG_MODE = "debug"
 _CLOUD_MODEL_PATTERN = re.compile(r"(^|[:_-])cloud($|[:_-])|-cloud$")
@@ -23,6 +24,7 @@ class RuntimeOptions:
     num_ctx: int = DEFAULT_NUM_CTX
     num_predict: int = DEFAULT_NUM_PREDICT
     batch: int = DEFAULT_BATCH
+    temperature: float = DEFAULT_TEMPERATURE
 
     @classmethod
     def from_env(cls) -> "RuntimeOptions":
@@ -30,6 +32,7 @@ class RuntimeOptions:
             num_ctx=_positive_int_from_env("OLLAMA_NUM_CTX", DEFAULT_NUM_CTX),
             num_predict=_positive_int_from_env("OLLAMA_NUM_PREDICT", DEFAULT_NUM_PREDICT),
             batch=_positive_int_from_env("OLLAMA_BATCH", DEFAULT_BATCH),
+            temperature=_non_negative_float_from_env("OLLAMA_TEMPERATURE", DEFAULT_TEMPERATURE),
         )
 
     @classmethod
@@ -40,13 +43,15 @@ class RuntimeOptions:
             num_ctx=_positive_int(payload.get("num_ctx"), "num_ctx"),
             num_predict=_positive_int(payload.get("num_predict"), "num_predict"),
             batch=_positive_int(payload.get("batch"), "batch"),
+            temperature=_non_negative_float(payload.get("temperature", DEFAULT_TEMPERATURE), "temperature"),
         )
 
-    def to_ollama_options(self) -> dict[str, int]:
+    def to_ollama_options(self) -> dict[str, int | float]:
         return {
             "num_ctx": self.num_ctx,
             "num_predict": self.num_predict,
             "batch": self.batch,
+            "temperature": self.temperature,
         }
 
 
@@ -109,6 +114,16 @@ def _positive_int_from_env(name: str, default: int) -> int:
         return default
 
 
+def _non_negative_float_from_env(name: str, default: float) -> float:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    try:
+        return _non_negative_float(raw_value, name)
+    except ApiError:
+        return default
+
+
 def _positive_int(value: object, name: str) -> int:
     try:
         parsed = int(str(value))
@@ -123,5 +138,23 @@ def _positive_int(value: object, name: str) -> int:
             status_code=422,
             code="invalid_runtime_options",
             message=f"{name} must be a positive integer.",
+        )
+    return parsed
+
+
+def _non_negative_float(value: object, name: str) -> float:
+    try:
+        parsed = float(str(value))
+    except (TypeError, ValueError) as exc:
+        raise ApiError(
+            status_code=422,
+            code="invalid_runtime_options",
+            message=f"{name} must be a non-negative number.",
+        ) from exc
+    if parsed < 0:
+        raise ApiError(
+            status_code=422,
+            code="invalid_runtime_options",
+            message=f"{name} must be a non-negative number.",
         )
     return parsed

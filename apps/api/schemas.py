@@ -7,6 +7,7 @@ class RuntimeOptionsRequest(BaseModel):
     num_ctx: int = Field(gt=0)
     num_predict: int = Field(gt=0)
     batch: int = Field(gt=0)
+    temperature: float = Field(default=0.8, ge=0)
 
 
 class GenerateRequest(BaseModel):
