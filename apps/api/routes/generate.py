@@ -27,6 +27,11 @@ def generate(
             input_roots=request.input_roots,
             risk_tags=request.risk_tags,
             debug=request.debug,
+            mode=request.mode,
+            model=request.model,
+            runtime_options=request.runtime_options.model_dump() if request.runtime_options else None,
+            allow_cloud_model=request.allow_cloud_model,
+            language=request.language,
         )
     )
     log_event(

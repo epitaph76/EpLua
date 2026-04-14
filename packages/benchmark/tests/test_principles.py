@@ -102,6 +102,103 @@ def test_principle_evaluator_accepts_mixed_case_hyphen_field_whitelist() -> None
     )
 
 
+def test_principle_evaluator_accepts_in_place_field_enrichment_as_array_result() -> None:
+    case = {
+        "prompt": (
+            "Для каждого файла в files добавь boolean-поле isImage: true, если extension равно png или jpg, "
+            "иначе false. Можно обновлять исходные объекты."
+        ),
+        "context": {"wf": {"vars": {"files": [{"extension": "png"}, {"extension": "pdf"}]}}},
+        "archetype": "filtering",
+        "primary_output_mode": "raw_lua",
+        "input_roots": ["wf.vars.files"],
+        "risk_tags": ["array_allocation"],
+        "expected_outputs": {"raw_lua": "return wf.vars.files"},
+    }
+    candidate = "\n".join(
+        [
+            "for _, file in ipairs(wf.vars.files) do",
+            '  file.isImage = (file.extension == "png" or file.extension == "jpg")',
+            "end",
+            "return wf.vars.files",
+        ]
+    )
+
+    report = evaluate_case_by_principles(case, candidate)
+
+    assert report["status"] == "pass"
+    assert any(
+        check["name"] == "array_result_allocation" and check["status"] == "pass"
+        for check in report["checks"]
+    )
+
+
+def test_principle_evaluator_accepts_alias_conditional_field_enrichment_as_array_result() -> None:
+    case = {
+        "prompt": (
+            "Для каждого файла в files добавь boolean-поле isImage: true, если extension равно png или jpg, "
+            "иначе false. Можно обновлять исходные объекты."
+        ),
+        "context": {"wf": {"vars": {"files": [{"extension": "png"}, {"extension": "pdf"}]}}},
+        "archetype": "filtering",
+        "primary_output_mode": "raw_lua",
+        "input_roots": ["wf.vars.files"],
+        "risk_tags": ["array_allocation"],
+        "expected_outputs": {"raw_lua": "return wf.vars.files"},
+    }
+    candidate = "\n".join(
+        [
+            "local files = wf.vars.files",
+            "for _, file in ipairs(files) do",
+            '  if file.extension == "png" or file.extension == "jpg" then',
+            "    file.isImage = true",
+            "  else",
+            "    file.isImage = false",
+            "  end",
+            "end",
+            "return files",
+        ]
+    )
+
+    report = evaluate_case_by_principles(case, candidate)
+
+    assert report["status"] == "pass"
+    assert any(
+        check["name"] == "array_result_allocation" and check["status"] == "pass"
+        for check in report["checks"]
+    )
+
+
+def test_principle_evaluator_rejects_filter_without_array_result_contract() -> None:
+    case = {
+        "prompt": "Оставь только те строки, где заполнены sku.",
+        "context": {"wf": {"vars": {"lines": [{"sku": "X1"}, {"sku": ""}]}}},
+        "archetype": "filtering",
+        "primary_output_mode": "raw_lua",
+        "input_roots": ["wf.vars.lines"],
+        "risk_tags": ["array_allocation"],
+        "expected_outputs": {"raw_lua": "return filtered lines"},
+    }
+    candidate = "\n".join(
+        [
+            "for _, line in ipairs(wf.vars.lines) do",
+            '  if line.sku == "" then',
+            "    line.skip = true",
+            "  end",
+            "end",
+            "return wf.vars.lines",
+        ]
+    )
+
+    report = evaluate_case_by_principles(case, candidate)
+
+    assert report["status"] == "fail"
+    assert any(
+        check["name"] == "array_result_allocation" and check["status"] == "fail"
+        for check in report["checks"]
+    )
+
+
 def test_principle_evaluator_accepts_per_item_type_normalization_returning_parent_array() -> None:
     case = {
         "prompt": "Сделай так, чтобы attachments у каждого сообщения всегда были массивом. Верни массив messages.",

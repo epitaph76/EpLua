@@ -1,6 +1,8 @@
 import json
 from datetime import UTC, datetime
 
+import pytest
+
 import scripts.run_full_benchmark_report as report_script
 
 
@@ -12,6 +14,17 @@ def test_default_benchmark_report_path_does_not_overwrite_locked_5th_baseline() 
 
     assert output_path.name == "20260413T163000Z_qwen3-coder-480b-cloud_full-328-report.json"
     assert "5_progon_2026-04-13_qwen3-coder-480b-cloud_full-328-report.json" not in str(output_path)
+
+
+def test_default_benchmark_model_is_local_when_env_is_missing(monkeypatch) -> None:
+    monkeypatch.delenv("OLLAMA_MODEL", raising=False)
+
+    assert report_script._default_model() == "qwen2.5-coder:3b"
+
+
+def test_release_benchmark_rejects_cloud_model() -> None:
+    with pytest.raises(SystemExit, match="Cloud Ollama model tags are not allowed"):
+        report_script._ensure_benchmark_model_allowed("qwen3-coder:480b-cloud", "release")
 
 
 def test_full_benchmark_report_omits_exact_match_metrics(tmp_path, monkeypatch) -> None:

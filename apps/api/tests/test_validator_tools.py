@@ -8,6 +8,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.append(str(REPO_ROOT))
 
+from packages.orchestrator.task_spec import TaskSpec  # noqa: E402
 from packages.validators import core  # noqa: E402
 
 
@@ -84,6 +85,17 @@ def test_validate_static_uses_luacheck_when_available(monkeypatch: pytest.Monkey
     assert commands[0][commands[0].index("--config") + 1].endswith(".luacheckrc")
 
 
+def test_luacheck_file_binary_runs_directly_instead_of_through_lua(tmp_path: Path) -> None:
+    luacheck_binary = tmp_path / "luacheck"
+    luacheck_binary.write_text("#!/bin/sh\n", encoding="utf-8")
+
+    command = core._build_luacheck_command(str(luacheck_binary), tmp_path / "candidate.lua")
+
+    assert command[0] == str(luacheck_binary)
+    assert "lua5.4" not in command[0]
+    assert str(luacheck_binary) in command
+
+
 def test_validate_static_surfaces_luacheck_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_resolve_tool(env_var: str, default: str) -> str | None:
         if env_var == "LUACHECK_BIN":
@@ -107,3 +119,108 @@ def test_validate_static_surfaces_luacheck_failure(monkeypatch: pytest.MonkeyPat
     assert report.status == "fail"
     assert report.findings[0].failure_class == "luacheck_failed"
     assert "undefined variable missing_value" in report.findings[0].message
+
+
+def test_validate_static_marks_broken_luacheck_launcher_as_infrastructure_skip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_resolve_tool(env_var: str, default: str) -> str | None:
+        if env_var == "LUACHECK_BIN":
+            return "luacheck"
+        return None
+
+    monkeypatch.setattr(core, "_resolve_tool_binary", fake_resolve_tool)
+
+    def fake_run(command: list[str], **_: object) -> CompletedProcess[str]:
+        return CompletedProcess(
+            command,
+            1,
+            "",
+            "/usr/bin/lua5.4: /usr/local/bin/luacheck:3: unexpected symbol near '-'",
+        )
+
+    monkeypatch.setattr(core.subprocess, "run", fake_run)
+
+    report = core.validate_static(
+        "return wf.vars.value",
+        output_mode=core.RAW_LUA,
+        allowed_data_roots=("wf.vars.value",),
+        forbidden_patterns=(),
+    )
+
+    assert report.status == "skipped"
+    assert report.skipped_reason == "validator_execution_failed"
+    assert report.metadata is not None
+    assert report.metadata["tool"] == "luacheck"
+
+
+def test_validate_runtime_behavior_catches_wrong_last_array_item_candidate() -> None:
+    report = core.validate_runtime_behavior(
+        "return wf.vars.emails",
+        output_mode=core.RAW_LUA,
+        execution_context={
+            "wf": {
+                "vars": {
+                    "emails": [
+                        "user1@example.com",
+                        "user2@example.com",
+                        "user3@example.com",
+                    ]
+                }
+            }
+        },
+        task_spec=TaskSpec(
+            task_text="Get the last email from the list.",
+            language="en",
+            archetype="simple_extraction",
+            operation="last_array_item",
+            output_mode=core.RAW_LUA,
+            input_roots=("wf.vars.emails",),
+            expected_shape="scalar_or_nil",
+            risk_tags=("array_indexing", "empty_array"),
+            edge_cases=("single_item", "empty_array"),
+            clarification_required=False,
+            clarification_question=None,
+        ),
+    )
+
+    assert report.status == "fail"
+    assert report.findings[0].failure_class == "runtime_behavior_mismatch"
+    assert "expected 'user3@example.com'" in report.findings[0].message
+
+
+def test_validate_principles_rejects_last_array_item_returning_array_alias() -> None:
+    task_spec = TaskSpec(
+        task_text="Get the last email from the list.",
+        language="en",
+        archetype="simple_extraction",
+        operation="last_array_item",
+        output_mode=core.RAW_LUA,
+        input_roots=("wf.vars.emails",),
+        expected_shape="scalar_or_nil",
+        risk_tags=("array_indexing", "empty_array"),
+        edge_cases=("single_item", "empty_array"),
+        clarification_required=False,
+        clarification_question=None,
+    )
+
+    report = core.validate_principles(
+        "local emails = wf.vars.emails\nif emails and #emails > 0 then\n\treturn emails\nend\nreturn nil",
+        output_mode=core.RAW_LUA,
+        risk_tags=("array_indexing", "empty_array"),
+        archetype="simple_extraction",
+        task_spec=task_spec,
+    )
+
+    assert report.status == "fail"
+    assert report.findings[0].failure_class == "array_item_returns_whole_array"
+
+    correct_report = core.validate_principles(
+        "local emails = wf.vars.emails\nif emails and #emails > 0 then\n\treturn emails[#emails]\nend\nreturn nil",
+        output_mode=core.RAW_LUA,
+        risk_tags=("array_indexing", "empty_array"),
+        archetype="simple_extraction",
+        task_spec=task_spec,
+    )
+
+    assert correct_report.status == "pass"

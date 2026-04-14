@@ -2,6 +2,9 @@ services:
   ollama:
     image: ollama/ollama:latest
     container_name: luamts-ollama
+    environment:
+      OLLAMA_NUM_PARALLEL: ${OLLAMA_PARALLEL:-1}
+      OLLAMA_NO_CLOUD: ${OLLAMA_NO_CLOUD:-1}
     ports:
       - "${OLLAMA_PUBLISHED_PORT:-11434}:11434"
     volumes:
@@ -42,12 +45,21 @@ services:
       OLLAMA_BASE_URL: http://ollama:11434
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5-coder:3b}
       OLLAMA_REQUEST_TIMEOUT: ${OLLAMA_REQUEST_TIMEOUT:-420}
+      OLLAMA_NUM_CTX: ${OLLAMA_NUM_CTX:-4096}
+      OLLAMA_NUM_PREDICT: ${OLLAMA_NUM_PREDICT:-256}
+      OLLAMA_BATCH: ${OLLAMA_BATCH:-1}
+      OLLAMA_PARALLEL: ${OLLAMA_PARALLEL:-1}
+      OLLAMA_NO_CLOUD: ${OLLAMA_NO_CLOUD:-1}
       STYLUA_BIN: /usr/local/bin/stylua
       LUACHECK_BIN: /usr/local/bin/luacheck
       LUA_BIN: /usr/bin/lua5.4
+      LUAMTS_HISTORY_FILE: /root/.luamts/history
     ports:
       - "${API_PUBLISHED_PORT:-8011}:8011"
+    volumes:
+      - luamts-api-state:/root/.luamts
     command: ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8011"]
 
 volumes:
   ollama-data:
+  luamts-api-state:

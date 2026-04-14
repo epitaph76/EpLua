@@ -1,5 +1,11 @@
 import json
+import re
 
+from packages.orchestrator.agent_prompt import AgentPrompt
+from packages.orchestrator import repair_loop
+from packages.orchestrator.planner import apply_planner_agent_response, plan_task
+from packages.orchestrator.repair_loop import _detect_repair_oscillation
+from packages.shared.quality import ValidatorReport
 from services.generation import GenerationService
 
 
@@ -7,15 +13,276 @@ class ScriptedModelAdapter:
     def __init__(self, responses: list[str]) -> None:
         self._responses = responses
         self.prompts: list[str] = []
+        self.agent_calls: list[dict[str, object]] = []
 
     def generate_from_prompt(self, prompt: str) -> str:
         self.prompts.append(prompt)
+        return self._next_response()
+
+    def generate_from_agent(self, agent_prompt: AgentPrompt) -> str:
+        self.agent_calls.append(
+            {
+                "agent": agent_prompt.agent_name,
+                "messages": agent_prompt.to_messages_payload(),
+                "legacy_prompt": agent_prompt.to_legacy_prompt(),
+            }
+        )
+        if agent_prompt.agent_name == "planner":
+            return _default_planner_response(agent_prompt)
+        if agent_prompt.agent_name == "prompter":
+            return "not-json"
+        return self._next_response()
+
+    def _next_response(self) -> str:
         if not self._responses:
             raise AssertionError("No scripted responses left for the model adapter.")
         return self._responses.pop(0)
 
 
+class AgenticPromptModelAdapter(ScriptedModelAdapter):
+    def generate_from_agent(self, agent_prompt: AgentPrompt) -> str:
+        self.agent_calls.append(
+            {
+                "agent": agent_prompt.agent_name,
+                "messages": agent_prompt.to_messages_payload(),
+                "legacy_prompt": agent_prompt.to_legacy_prompt(),
+            }
+        )
+        if agent_prompt.agent_name == "planner":
+            return json.dumps(
+                {
+                    "operation": "last_array_item",
+                    "output_mode": "raw_lua",
+                    "input_roots": ["wf.vars.emails"],
+                    "expected_shape": "scalar_or_nil",
+                    "risk_tags": ["array_indexing", "empty_array"],
+                    "edge_cases": ["single_item", "empty_array"],
+                    "clarification_required": False,
+                    "clarification_question": None,
+                    "task_intents": [],
+                }
+            )
+        if agent_prompt.agent_name == "prompter":
+            return json.dumps(
+                {
+                    "system_message": "TaskSpec\nAGENT PROMPTER SYSTEM",
+                    "user_message": "TaskSpec\nAGENT PROMPTER USER",
+                }
+            )
+        return self._next_response()
+
+
+class TruncatedPlannerModelAdapter(ScriptedModelAdapter):
+    def generate_from_agent(self, agent_prompt: AgentPrompt) -> str:
+        self.agent_calls.append(
+            {
+                "agent": agent_prompt.agent_name,
+                "messages": agent_prompt.to_messages_payload(),
+                "legacy_prompt": agent_prompt.to_legacy_prompt(),
+            }
+        )
+        if agent_prompt.agent_name == "planner":
+            return (
+                '{"operation":"last_array_item","output_mode":"raw_lua",'
+                '"input_roots":["wf.vars.emails"],"expected_shape":"scalar_or_nil",'
+                '"risk_tags":["array_indexing"],"edge_cases":["single_item","empty_array"],"clar'
+            )
+        if agent_prompt.agent_name == "prompter":
+            return ""
+        return self._next_response()
+
+
+class CompactAgentProtocolModelAdapter(ScriptedModelAdapter):
+    def generate_from_agent(self, agent_prompt: AgentPrompt) -> str:
+        self.agent_calls.append(
+            {
+                "agent": agent_prompt.agent_name,
+                "messages": agent_prompt.to_messages_payload(),
+                "legacy_prompt": agent_prompt.to_legacy_prompt(),
+            }
+        )
+        if agent_prompt.agent_name == "planner":
+            return (
+                '{"op":"last_array_item","mode":"raw_lua","roots":["wf.vars.emails"],'
+                '"shape":"scalar_or_nil","risks":["array_indexing"],"edges":["single_item","empty_array"],'
+                '"clar":false,"intents":[]}'
+            )
+        if agent_prompt.agent_name == "prompter":
+            return '{"sys":["Return the last array item, not the whole array."],"user":["Use wf.vars.emails[#wf.vars.emails]."]}'
+        return self._next_response()
+
+
+class EmptyPlannerPatchPrompterModelAdapter(ScriptedModelAdapter):
+    def generate_from_agent(self, agent_prompt: AgentPrompt) -> str:
+        self.agent_calls.append(
+            {
+                "agent": agent_prompt.agent_name,
+                "messages": agent_prompt.to_messages_payload(),
+                "legacy_prompt": agent_prompt.to_legacy_prompt(),
+            }
+        )
+        if agent_prompt.agent_name == "planner":
+            return ""
+        if agent_prompt.agent_name == "prompter":
+            return '{"sys":["Return the last array item, not the whole array."],"user":["Use wf.vars.emails[#wf.vars.emails]."]}'
+        return self._next_response()
+
+
 SEMANTIC_PASS_RESPONSE = '{"status":"pass","message":"Semantic validation passed."}'
+
+
+def _default_planner_response(agent_prompt: AgentPrompt) -> str:
+    user_message = agent_prompt.messages[1].content
+    lowered = user_message.lower()
+    roots = tuple(dict.fromkeys(re.findall(r"wf\.(?:vars|initVariables)\.[A-Za-z0-9_\.]+", user_message)))
+    output_mode = _planned_output_mode(lowered)
+    clarification_required = (
+        '"explicit_input_basis":false' in lowered
+        and any(root.startswith("wf.vars.") for root in roots)
+        and any(root.startswith("wf.initVariables.") for root in roots)
+    )
+    operation = _planned_operation(lowered, output_mode)
+    expected_shape = _planned_expected_shape(operation, output_mode)
+    edge_cases = ["single_item", "empty_array"] if operation in {"last_array_item", "first_array_item"} else []
+    task_intents = _planned_task_intents(lowered)
+    return json.dumps(
+        {
+            "operation": operation,
+            "output_mode": "clarification" if clarification_required else output_mode,
+            "input_roots": list(roots),
+            "expected_shape": "clarification_question" if clarification_required else expected_shape,
+            "risk_tags": [],
+            "edge_cases": edge_cases,
+            "clarification_required": clarification_required,
+            "clarification_question": (
+                "Which data root should I use: wf.vars.emails or wf.initVariables.recallTime?"
+                if clarification_required
+                else None
+            ),
+            "task_intents": task_intents,
+        }
+    )
+
+
+def _planned_output_mode(lowered_prompt: str) -> str:
+    if '"output_mode":"patch_mode"' in lowered_prompt:
+        return "patch_mode"
+    if '"output_mode":"json_wrapper"' in lowered_prompt:
+        return "json_wrapper"
+    if '"output_mode":"clarification"' in lowered_prompt:
+        return "clarification"
+    return "raw_lua"
+
+
+def _planned_operation(lowered_prompt: str, output_mode: str) -> str:
+    if "послед" in lowered_prompt or "last" in lowered_prompt:
+        return "last_array_item"
+    if "перв" in lowered_prompt or "first" in lowered_prompt:
+        return "first_array_item"
+    if "datetime_conversion" in lowered_prompt:
+        return "datetime_conversion"
+    if output_mode == "patch_mode":
+        return "additive_patch"
+    if "filtering" in lowered_prompt:
+        return "array_filter"
+    return "direct_extraction"
+
+
+def _planned_expected_shape(operation: str, output_mode: str) -> str:
+    if output_mode == "patch_mode":
+        return "json_object_patch"
+    if output_mode == "json_wrapper":
+        return "json_object_with_wrapped_code"
+    if operation in {"last_array_item", "first_array_item", "direct_extraction"}:
+        return "scalar_or_nil"
+    if operation == "array_filter":
+        return "array"
+    return "lua_value"
+
+
+def _planned_task_intents(lowered_prompt: str) -> list[str]:
+    intents: list[str] = []
+    if "очист" in lowered_prompt or "clear " in lowered_prompt:
+        intents.append("clear_target_fields")
+    if "удали" in lowered_prompt or "remove" in lowered_prompt:
+        intents.append("remove_target_fields")
+    if "оставь только" in lowered_prompt or "keep only" in lowered_prompt:
+        intents.append("keep_only_target_fields")
+    if "не трогай" in lowered_prompt or "остальные поля" in lowered_prompt or "preserve untouched" in lowered_prompt:
+        intents.append("preserve_untouched_fields")
+    if "в существующ" in lowered_prompt or "in place" in lowered_prompt:
+        intents.append("mutate_in_place")
+    return list(dict.fromkeys(intents))
+
+
+def test_planner_agent_partial_response_falls_back_to_structural_plan() -> None:
+    fallback = plan_task(
+        "Get the last email from the list.",
+        '{"wf":{"vars":{"emails":["user@example.com"]}}}',
+        language="en",
+        archetype="simple_extraction",
+        output_mode="raw_lua",
+        input_roots=["wf.vars.emails"],
+        risk_tags=("array_indexing",),
+    )
+
+    result = apply_planner_agent_response('{"operation":"last_array_item"}', fallback)
+
+    assert result.source == "deterministic_fallback"
+    assert result.fallback_reason == "planner_missing_schema"
+    assert result.task_spec.operation == "unresolved"
+    assert result.task_spec.expected_shape == "unknown"
+
+
+def test_planner_agent_salvages_truncated_response_when_core_fields_are_present() -> None:
+    fallback = plan_task(
+        "Get the last email from the list.",
+        '{"wf":{"vars":{"emails":["user@example.com"]}}}',
+        language="en",
+        archetype="simple_extraction",
+        output_mode="raw_lua",
+        input_roots=["wf.vars.emails"],
+        risk_tags=("array_indexing",),
+    )
+
+    result = apply_planner_agent_response(
+        (
+            '{"operation":"last_array_item","output_mode":"raw_lua",'
+            '"input_roots":["wf.vars.emails"],"expected_shape":"scalar_or_nil",'
+            '"risk_tags":["array_indexing"],"edge_cases":["single_item","empty_array"],"clar'
+        ),
+        fallback,
+    )
+
+    assert result.source == "agent_partial"
+    assert result.fallback_reason == "planner_truncated_json"
+    assert result.task_spec.operation == "last_array_item"
+    assert result.task_spec.expected_shape == "scalar_or_nil"
+    assert result.task_spec.edge_cases == ("single_item", "empty_array")
+
+
+def test_planner_agent_accepts_compact_response_keys() -> None:
+    fallback = plan_task(
+        "Get the last email from the list.",
+        '{"wf":{"vars":{"emails":["user@example.com"]}}}',
+        language="en",
+        archetype="simple_extraction",
+        output_mode="raw_lua",
+        input_roots=["wf.vars.emails"],
+        risk_tags=("array_indexing",),
+    )
+
+    result = apply_planner_agent_response(
+        '{"op":"last_array_item","mode":"raw_lua","roots":["wf.vars.emails"],"shape":"scalar_or_nil","edges":["empty_array"],"clar":false}',
+        fallback,
+    )
+
+    assert result.source == "agent"
+    assert result.task_spec.operation == "last_array_item"
+    assert result.task_spec.output_mode == "raw_lua"
+    assert result.task_spec.input_roots == ("wf.vars.emails",)
+    assert result.task_spec.expected_shape == "scalar_or_nil"
+    assert result.task_spec.edge_cases == ("empty_array",)
 
 
 def test_generation_service_auto_normalizes_fenced_raw_lua_before_repair_budget() -> None:
@@ -51,12 +318,14 @@ def test_generation_service_auto_normalizes_fenced_raw_lua_before_repair_budget(
 
     assert result["code"] == "return wf.vars.emails[#wf.vars.emails]"
     assert result["validation_status"] == "passed"
+    assert result["stop_reason"] == "passed"
     assert result["repair_count"] == 0
     assert result["trace"] == [
         "request_received",
         "generation",
         "format_validation",
         "rule_validation",
+        "runtime_validation",
         "semantic_validation",
         "finalize",
     ]
@@ -64,6 +333,355 @@ def test_generation_service_auto_normalizes_fenced_raw_lua_before_repair_budget(
     assert debug is not None
     assert debug["validation_passes"][0]["candidate"] == "return wf.vars.emails[#wf.vars.emails]"
     assert debug["validation_passes"][0]["format_report"]["status"] == "pass"
+
+
+def test_generation_service_runs_runtime_validation_before_semantic_for_simple_extraction() -> None:
+    model_adapter = ScriptedModelAdapter(
+        [
+            "return wf.vars.emails[#wf.vars.emails]",
+            SEMANTIC_PASS_RESPONSE,
+        ]
+    )
+    service = GenerationService(
+        model_adapter=model_adapter
+    )
+
+    result = service.generate(
+        task_text="Get the last email from the list.",
+        provided_context=json.dumps(
+            {
+                "wf": {
+                    "vars": {
+                        "emails": [
+                            "user1@example.com",
+                            "user2@example.com",
+                        ]
+                    }
+                }
+            }
+        ),
+        archetype="simple_extraction",
+        output_mode="raw_lua",
+        input_roots=["wf.vars.emails"],
+        risk_tags=["array_indexing", "empty_array"],
+        debug=True,
+    )
+
+    assert result["trace"] == [
+        "request_received",
+        "generation",
+        "format_validation",
+        "rule_validation",
+        "runtime_validation",
+        "semantic_validation",
+        "finalize",
+    ]
+    debug = result["debug"]
+    assert debug is not None
+    assert debug["prompt_package"]["task_spec"]["operation"] == "last_array_item"
+    assert debug["prompt_package"]["task_spec"]["expected_shape"] == "scalar_or_nil"
+    assert debug["prompt_package"]["planner_result"]["agent"] == "planner"
+    assert debug["prompt_package"]["prompt_builder_result"]["agent"] == "prompter"
+    assert [layer["stage"] for layer in debug["pipeline_layers"]] == [
+        "input_normalization",
+        "planner",
+        "prompter",
+        "generator",
+    ]
+    assert debug["validation_passes"][0]["runtime_report"]["status"] == "pass"
+    assert debug["model_calls"][1]["phase"] == "semantic_validation"
+    assert [call["agent"] for call in model_adapter.agent_calls] == [
+        "planner",
+        "prompter",
+        "generator",
+        "semantic_critic",
+    ]
+    assert [message["role"] for message in model_adapter.agent_calls[0]["messages"]] == ["system", "user"]
+
+
+def test_generation_service_runtime_blocks_wrong_candidate_after_truncated_planner_json() -> None:
+    model_adapter = TruncatedPlannerModelAdapter(
+        [
+            "return (#wf.vars.emails>0 and wf.vars.emails or nil)",
+            "return wf.vars.emails[#wf.vars.emails]",
+            SEMANTIC_PASS_RESPONSE,
+        ]
+    )
+    service = GenerationService(model_adapter=model_adapter)
+
+    result = service.generate(
+        task_text="Из полученного списка email получи последний.",
+        provided_context=json.dumps(
+            {
+                "wf": {
+                    "vars": {
+                        "emails": [
+                            "user1@example.com",
+                            "user2@example.com",
+                            "user3@example.com",
+                        ]
+                    }
+                }
+            }
+        ),
+        archetype="simple_extraction",
+        output_mode="raw_lua",
+        input_roots=["wf.vars.emails"],
+        risk_tags=["array_indexing", "empty_array"],
+        debug=True,
+    )
+
+    assert result["validation_status"] == "repaired"
+    assert result["code"] == "return wf.vars.emails[#wf.vars.emails]"
+    debug = result["debug"]
+    assert debug is not None
+    assert debug["prompt_package"]["planner_result"]["source"] == "agent_partial"
+    assert debug["validation_passes"][0]["runtime_report"]["status"] == "fail"
+    assert debug["validation_passes"][0]["semantic_report"]["status"] == "skipped"
+    assert debug["validation_passes"][1]["runtime_report"]["status"] == "pass"
+    assert debug["validation_passes"][1]["semantic_report"]["status"] == "pass"
+
+
+def test_generation_service_applies_compact_planner_and_prompter_protocol() -> None:
+    model_adapter = CompactAgentProtocolModelAdapter(
+        [
+            "return wf.vars.emails[#wf.vars.emails]",
+            SEMANTIC_PASS_RESPONSE,
+        ]
+    )
+    service = GenerationService(model_adapter=model_adapter)
+
+    result = service.generate(
+        task_text="Из полученного списка email получи последний.",
+        provided_context=json.dumps({"wf": {"vars": {"emails": ["user1@example.com", "user2@example.com"]}}}),
+        archetype="simple_extraction",
+        output_mode="raw_lua",
+        input_roots=["wf.vars.emails"],
+        risk_tags=["array_indexing", "empty_array"],
+        debug=True,
+    )
+
+    assert result["validation_status"] == "passed"
+    assert result["code"] == "return wf.vars.emails[#wf.vars.emails]"
+    debug = result["debug"]
+    assert debug["prompt_package"]["planner_result"]["source"] == "agent"
+    assert debug["prompt_package"]["prompt_builder_result"]["source"] == "agent_patch"
+    generator_system = debug["model_calls"][0]["messages"][0]["content"]
+    generator_user = debug["model_calls"][0]["messages"][1]["content"]
+    assert "Return the last array item, not the whole array." in generator_system
+    assert "Use wf.vars.emails[#wf.vars.emails]." in generator_user
+    assert len(debug["agent_layer_calls"][0]["raw_response"]) < 220
+    assert len(debug["agent_layer_calls"][1]["raw_response"]) < 140
+
+
+def test_generation_service_runtime_backstop_blocks_unresolved_last_array_item_shape() -> None:
+    model_adapter = EmptyPlannerPatchPrompterModelAdapter(
+        [
+            "if #wf.vars.emails == 0 then return nil end\nreturn wf.vars.emails",
+            "return wf.vars.emails[#wf.vars.emails]",
+            SEMANTIC_PASS_RESPONSE,
+        ]
+    )
+    service = GenerationService(model_adapter=model_adapter)
+
+    result = service.generate(
+        task_text="Из полученного списка email получи последний.",
+        provided_context=json.dumps(
+            {
+                "wf": {
+                    "vars": {
+                        "emails": [
+                            "user1@example.com",
+                            "user2@example.com",
+                            "user3@example.com",
+                        ]
+                    }
+                }
+            }
+        ),
+        archetype="simple_extraction",
+        output_mode="raw_lua",
+        input_roots=["wf.vars.emails"],
+        risk_tags=["array_indexing", "empty_array"],
+        debug=True,
+    )
+
+    assert result["validation_status"] == "repaired"
+    assert result["code"] == "return wf.vars.emails[#wf.vars.emails]"
+    debug = result["debug"]
+    assert debug["prompt_package"]["planner_result"]["source"] == "deterministic_fallback"
+    assert debug["prompt_package"]["task_spec"]["operation"] == "unresolved"
+    assert debug["validation_passes"][0]["principle_report"]["status"] == "fail"
+    assert debug["validation_passes"][0]["principle_report"]["findings"][0]["failure_class"] == "array_item_returns_whole_array"
+    assert debug["validation_passes"][0]["runtime_report"]["status"] == "skipped"
+    assert debug["validation_passes"][0]["runtime_report"]["skipped_reason"] == "prerequisite_validation_failed"
+    assert debug["validation_passes"][0]["semantic_report"]["status"] == "skipped"
+    assert debug["validation_passes"][0]["critic_report"]["action"] == "repair"
+    assert debug["validation_passes"][1]["runtime_report"]["status"] == "pass"
+    assert debug["validation_passes"][1]["semantic_report"]["status"] == "pass"
+
+
+def test_generation_service_applies_valid_planner_and_prompter_agent_outputs() -> None:
+    model_adapter = AgenticPromptModelAdapter(
+        [
+            "return wf.vars.emails[#wf.vars.emails]",
+            SEMANTIC_PASS_RESPONSE,
+        ]
+    )
+    service = GenerationService(model_adapter=model_adapter)
+
+    result = service.generate(
+        task_text="Get the last email from the list.",
+        provided_context=json.dumps({"wf": {"vars": {"emails": ["user1@example.com", "user2@example.com"]}}}),
+        archetype="simple_extraction",
+        output_mode="raw_lua",
+        input_roots=["wf.vars.emails"],
+        risk_tags=["array_indexing", "empty_array"],
+        debug=True,
+    )
+
+    debug = result["debug"]
+    assert result["validation_status"] == "passed"
+    assert debug is not None
+    assert debug["prompt_package"]["planner_result"]["source"] == "agent"
+    assert debug["prompt_package"]["prompt_builder_result"]["source"] == "agent"
+    assert debug["model_calls"][0]["agent"] == "generator"
+    assert debug["model_calls"][0]["messages"][0]["content"] == "TaskSpec\nAGENT PROMPTER SYSTEM"
+    assert [call["phase"] for call in debug["agent_layer_calls"]] == ["planner", "prompter"]
+
+
+def test_generation_service_runs_runtime_and_semantic_when_static_validator_has_infra_skip(monkeypatch) -> None:
+    real_run_validation_pipeline = repair_loop.run_validation_pipeline
+
+    def static_infra_skip_pipeline(*args, **kwargs):
+        normalized, format_report, syntax_report, _static_report, principle_report, _rule_report = (
+            real_run_validation_pipeline(*args, **kwargs)
+        )
+        static_report = ValidatorReport(
+            validator="static_validator",
+            status="skipped",
+            skipped_reason="validator_execution_failed",
+            metadata={"tool": "luacheck", "message": "broken luacheck launcher"},
+        )
+        rule_report = ValidatorReport(
+            validator="rule_validator",
+            status="skipped",
+            skipped_reason="validator_execution_failed",
+        )
+        return normalized, format_report, syntax_report, static_report, principle_report, rule_report
+
+    monkeypatch.setattr(repair_loop, "run_validation_pipeline", static_infra_skip_pipeline)
+    service = GenerationService(
+        model_adapter=ScriptedModelAdapter(
+            [
+                "return wf.vars.emails[#wf.vars.emails]",
+                SEMANTIC_PASS_RESPONSE,
+            ]
+        )
+    )
+
+    result = service.generate(
+        task_text="Get the last email from the list.",
+        provided_context=json.dumps(
+            {
+                "wf": {
+                    "vars": {
+                        "emails": [
+                            "user1@example.com",
+                            "user2@example.com",
+                        ]
+                    }
+                }
+            }
+        ),
+        archetype="simple_extraction",
+        output_mode="raw_lua",
+        input_roots=["wf.vars.emails"],
+        risk_tags=["array_indexing", "empty_array"],
+        debug=True,
+    )
+
+    assert result["validation_status"] == "passed"
+    assert result["trace"] == [
+        "request_received",
+        "generation",
+        "format_validation",
+        "rule_validation",
+        "runtime_validation",
+        "semantic_validation",
+        "finalize",
+    ]
+    first_iteration = result["validator_report"]["iterations"][0]
+    assert first_iteration["static_report"]["status"] == "skipped"
+    assert first_iteration["static_report"]["skipped_reason"] == "validator_execution_failed"
+    assert first_iteration["rule_report"]["status"] == "skipped"
+    assert first_iteration["runtime_report"]["status"] == "pass"
+    assert first_iteration["semantic_report"]["status"] == "pass"
+
+
+def test_generation_service_repairs_runtime_behavior_mismatch_before_semantic() -> None:
+    service = GenerationService(
+        model_adapter=ScriptedModelAdapter(
+            [
+                "return wf.vars.emails[1]",
+                "return wf.vars.emails[#wf.vars.emails]",
+                SEMANTIC_PASS_RESPONSE,
+            ]
+        )
+    )
+
+    result = service.generate(
+        task_text="Get the last email from the list.",
+        provided_context=json.dumps(
+            {
+                "wf": {
+                    "vars": {
+                        "emails": [
+                            "user1@example.com",
+                            "user2@example.com",
+                        ]
+                    }
+                }
+            }
+        ),
+        archetype="simple_extraction",
+        output_mode="raw_lua",
+        input_roots=["wf.vars.emails"],
+        risk_tags=["array_indexing", "empty_array"],
+        debug=True,
+    )
+
+    assert result["validation_status"] == "repaired"
+    assert result["stop_reason"] == "passed"
+    assert result["trace"] == [
+        "request_received",
+        "generation",
+        "format_validation",
+        "rule_validation",
+        "runtime_validation",
+        "critic_step",
+        "repair_generation",
+        "format_validation",
+        "rule_validation",
+        "runtime_validation",
+        "semantic_validation",
+        "finalize",
+    ]
+    debug = result["debug"]
+    assert debug is not None
+    assert debug["validation_passes"][0]["runtime_report"]["status"] == "fail"
+    assert debug["validation_passes"][0]["runtime_report"]["findings"][0]["failure_class"] == "runtime_behavior_mismatch"
+    assert debug["validation_passes"][0]["semantic_report"]["status"] == "skipped"
+    assert debug["validation_passes"][1]["runtime_report"]["status"] == "pass"
+    assert debug["model_calls"][1]["phase"] == "repair_generation"
+    assert "Validation summary:" in debug["model_calls"][1]["prompt"]
+    assert "TaskSpec compact:" in debug["model_calls"][1]["prompt"]
+    assert "ValidationBundle facts:" not in debug["model_calls"][1]["prompt"]
+    assert "Original prompt:" not in debug["model_calls"][1]["prompt"]
+    assert '"behavioral_fingerprint"' in debug["model_calls"][1]["prompt"]
+    assert '"failed_fixture"' in debug["model_calls"][1]["prompt"]
+    assert '"shape":"scalar_or_nil"' in debug["model_calls"][1]["prompt"]
+    assert debug["model_calls"][2]["phase"] == "semantic_validation"
 
 
 def test_generation_service_repairs_markdown_fenced_raw_lua_candidate() -> None:
@@ -107,6 +725,7 @@ def test_generation_service_repairs_markdown_fenced_raw_lua_candidate() -> None:
         "generation",
         "format_validation",
         "rule_validation",
+        "runtime_validation",
         "semantic_validation",
         "finalize",
     ]
@@ -157,6 +776,7 @@ def test_generation_service_normalizes_fenced_json_wrapper_on_repair_iteration()
         "generation",
         "format_validation",
         "rule_validation",
+        "runtime_validation",
         "semantic_validation",
         "finalize",
     ]
@@ -249,6 +869,7 @@ def test_generation_service_repairs_invalid_json_json_wrapper_with_tool() -> Non
         "repair_generation",
         "format_validation",
         "rule_validation",
+        "runtime_validation",
         "semantic_validation",
         "finalize",
     ]
@@ -257,7 +878,7 @@ def test_generation_service_repairs_invalid_json_json_wrapper_with_tool() -> Non
         "action": "repair",
         "failure_class": "invalid_json",
         "message": "Repair the candidate for failure class invalid_json without changing the user goal.",
-        "repair_prompt": "Repair the current candidate using the validator finding. Keep the same output mode, preserve the user goal, and return only the repaired result.",
+        "repair_prompt": "Исправь текущий кандидат по замечанию валидатора. Сохрани тот же режим вывода, цель пользователя и верни только исправленный результат.",
     }
     debug = result["debug"]
     assert debug is not None
@@ -304,7 +925,7 @@ def test_generation_service_repairs_invalid_json_patch_mode_with_tool() -> None:
         "action": "repair",
         "failure_class": "invalid_json",
         "message": "Repair the candidate for failure class invalid_json without changing the user goal.",
-        "repair_prompt": "Repair the current candidate using the validator finding. Keep the same output mode, preserve the user goal, and return only the repaired result.",
+        "repair_prompt": "Исправь текущий кандидат по замечанию валидатора. Сохрани тот же режим вывода, цель пользователя и верни только исправленный результат.",
     }
     debug = result["debug"]
     assert debug is not None
@@ -441,19 +1062,15 @@ def test_generation_service_exposes_debug_audit_trail_for_repair_flow() -> None:
 
 
 def test_generation_service_repairs_semantically_wrong_but_formally_valid_candidate() -> None:
+    model_adapter = ScriptedModelAdapter(
+        [
+            "return wf.vars.emails[1]",
+            "return wf.vars.emails[#wf.vars.emails]",
+            '{"status":"pass","message":"The candidate now returns the last email."}',
+        ]
+    )
     service = GenerationService(
-        model_adapter=ScriptedModelAdapter(
-            [
-                "return wf.vars.emails[1]",
-                (
-                    '{"status":"fail","failure_class":"semantic_mismatch","message":"The task asks for the last email, '
-                    'but the candidate returns the first item.","repairable":true,"ambiguous":false,'
-                    '"suggestion":"Return the last element of wf.vars.emails instead of the first one."}'
-                ),
-                "return wf.vars.emails[#wf.vars.emails]",
-                '{"status":"pass","message":"The candidate now returns the last email."}',
-            ]
-        )
+        model_adapter=model_adapter
     )
 
     result = service.generate(
@@ -484,34 +1101,112 @@ def test_generation_service_repairs_semantically_wrong_but_formally_valid_candid
         "generation",
         "format_validation",
         "rule_validation",
-        "semantic_validation",
+        "runtime_validation",
         "critic_step",
         "repair_generation",
         "format_validation",
         "rule_validation",
+        "runtime_validation",
         "semantic_validation",
         "finalize",
     ]
     assert result["critic_report"] == {
         "action": "repair",
-        "failure_class": "semantic_mismatch",
-        "message": "Repair the candidate to match the task semantics without changing the user goal.",
-        "repair_prompt": "Return the last element of wf.vars.emails instead of the first one.",
+        "failure_class": "runtime_behavior_mismatch",
+        "message": "Исправь кандидат так, чтобы его runtime-поведение соответствовало задаче.",
+        "repair_prompt": (
+            "Текущий кандидат не соответствует operation=last_array_item. "
+            "Нужно вернуть последний элемент массива из wf.vars.emails, либо nil для пустого массива. "
+            "Ожидаемая форма результата: scalar_or_nil. "
+            "Сломанный runtime fixture: primary. "
+            "Ожидалось: 'user2@example.com'; фактически получено: 'user1@example.com'. "
+            "Не возвращай весь входной массив, если expected_shape требует scalar_or_nil. "
+            "Верни только исправленный результат без объяснений."
+        ),
     }
     first_iteration = result["validator_report"]["iterations"][0]
     second_iteration = result["validator_report"]["iterations"][1]
     assert first_iteration["rule_report"]["status"] == "pass"
-    assert first_iteration["semantic_report"]["status"] == "fail"
-    assert first_iteration["semantic_report"]["findings"][0]["failure_class"] == "semantic_mismatch"
+    assert first_iteration["runtime_report"]["status"] == "fail"
+    assert first_iteration["runtime_report"]["findings"][0]["failure_class"] == "runtime_behavior_mismatch"
+    assert first_iteration["semantic_report"]["status"] == "skipped"
     assert second_iteration["semantic_report"]["status"] == "pass"
     debug = result["debug"]
     assert debug is not None
     assert [call["phase"] for call in debug["model_calls"]] == [
         "generation",
-        "semantic_validation",
         "repair_generation",
         "semantic_validation",
     ]
+    assert debug["model_calls"][1]["raw_response"] == "return wf.vars.emails[#wf.vars.emails]"
+    assert debug["validation_passes"][1]["runtime_report"]["status"] == "pass"
+    assert [call["agent"] for call in model_adapter.agent_calls] == [
+        "planner",
+        "prompter",
+        "generator",
+        "prompter",
+        "generator",
+        "semantic_critic",
+    ]
+    assert "Return only short additions for the next generator prompt." in model_adapter.agent_calls[3]["messages"][0]["content"]
+    assert "Use only the compact repair facts as the source of truth." in model_adapter.agent_calls[4]["messages"][0]["content"]
+
+
+def test_generation_service_repairs_whole_array_alias_for_last_array_item_before_runtime() -> None:
+    model_adapter = CompactAgentProtocolModelAdapter(
+        [
+            "local emails = wf.vars.emails\nif emails and #emails > 0 then\n\treturn emails\nelse\n\treturn nil\nend",
+            "return wf.vars.emails[#wf.vars.emails]",
+            SEMANTIC_PASS_RESPONSE,
+        ]
+    )
+    service = GenerationService(model_adapter=model_adapter)
+
+    result = service.generate(
+        task_text="Из полученного списка email получи последний.",
+        provided_context=json.dumps(
+            {
+                "wf": {
+                    "vars": {
+                        "emails": [
+                            "user1@example.com",
+                            "user2@example.com",
+                            "user3@example.com",
+                        ]
+                    }
+                }
+            }
+        ),
+        archetype="simple_extraction",
+        output_mode="raw_lua",
+        input_roots=["wf.vars.emails"],
+        risk_tags=["array_indexing", "empty_array"],
+        debug=True,
+    )
+
+    assert result["code"] == "return wf.vars.emails[#wf.vars.emails]"
+    assert result["validation_status"] == "repaired"
+    assert result["trace"] == [
+        "request_received",
+        "generation",
+        "format_validation",
+        "rule_validation",
+        "critic_step",
+        "repair_generation",
+        "format_validation",
+        "rule_validation",
+        "runtime_validation",
+        "semantic_validation",
+        "finalize",
+    ]
+    first_iteration = result["validator_report"]["iterations"][0]
+    second_iteration = result["validator_report"]["iterations"][1]
+    assert first_iteration["principle_report"]["status"] == "fail"
+    assert first_iteration["principle_report"]["findings"][0]["failure_class"] == "array_item_returns_whole_array"
+    assert first_iteration["runtime_report"]["status"] == "skipped"
+    assert first_iteration["runtime_report"]["skipped_reason"] == "prerequisite_validation_failed"
+    assert second_iteration["runtime_report"]["status"] == "pass"
+    assert second_iteration["semantic_report"]["status"] == "pass"
 
 
 def test_generation_service_preserves_think_block_and_validates_visible_raw_lua_response() -> None:
@@ -613,7 +1308,6 @@ def test_generation_service_normalizes_fenced_raw_lua_on_repair_iteration() -> N
         model_adapter=ScriptedModelAdapter(
             [
                 "return wf.data.emails[#wf.data.emails]",
-                SEMANTIC_PASS_RESPONSE,
                 "```lua\nreturn wf.vars.emails[#wf.vars.emails]\n```",
                 SEMANTIC_PASS_RESPONSE,
             ]
@@ -648,11 +1342,11 @@ def test_generation_service_normalizes_fenced_raw_lua_on_repair_iteration() -> N
         "generation",
         "format_validation",
         "rule_validation",
-        "semantic_validation",
         "critic_step",
         "repair_generation",
         "format_validation",
         "rule_validation",
+        "runtime_validation",
         "semantic_validation",
         "finalize",
     ]
@@ -661,13 +1355,13 @@ def test_generation_service_normalizes_fenced_raw_lua_on_repair_iteration() -> N
         "action": "repair",
         "failure_class": "invented_data_root",
         "message": "Repair the candidate for failure class invented_data_root without changing the user goal.",
-        "repair_prompt": "Repair the current candidate using the validator finding. Keep the same output mode, preserve the user goal, and return only the repaired result.",
+        "repair_prompt": "Исправь текущий кандидат по замечанию валидатора. Сохрани тот же режим вывода, цель пользователя и верни только исправленный результат.",
     }
     debug = result["debug"]
     assert debug is not None
-    assert debug["model_calls"][1]["phase"] == "semantic_validation"
-    assert debug["model_calls"][2]["phase"] == "repair_generation"
-    assert debug["model_calls"][2]["raw_response"].startswith("```lua")
+    assert debug["model_calls"][1]["phase"] == "repair_generation"
+    assert debug["model_calls"][1]["raw_response"].startswith("```lua")
+    assert debug["model_calls"][2]["phase"] == "semantic_validation"
     assert debug["validation_passes"][0]["rule_report"]["findings"][0]["failure_class"] == "invented_data_root"
     assert debug["validation_passes"][1]["format_report"]["status"] == "pass"
     assert debug["validation_passes"][1]["normalized_candidate"] == result["code"]
@@ -736,7 +1430,6 @@ def test_generation_service_repairs_missing_array_allocator_with_tool() -> None:
         "generation",
         "format_validation",
         "rule_validation",
-        "semantic_validation",
         "critic_step",
         "repair_generation",
         "format_validation",
@@ -748,16 +1441,16 @@ def test_generation_service_repairs_missing_array_allocator_with_tool() -> None:
     assert result["critic_report"] == {
         "action": "repair",
         "failure_class": "missing_array_allocator",
-        "message": "Add the missing domain-specific element without changing the requested result shape.",
-        "repair_prompt": "Repair the candidate by adding the missing domain-specific logic while preserving the requested output mode and user goal.",
+        "message": "Добавь недостающий доменный элемент, не меняя требуемую форму результата.",
+        "repair_prompt": "Исправь кандидат, добавив недостающую доменную логику, сохранив требуемый режим вывода и цель пользователя.",
     }
     debug = result["debug"]
     assert debug is not None
     assert debug["validation_passes"][0]["rule_report"]["findings"][0]["failure_class"] == "missing_array_allocator"
     assert debug["validation_passes"][1]["normalized_candidate"] == result["code"]
-    assert debug["model_calls"][1]["phase"] == "semantic_validation"
-    assert debug["model_calls"][2]["phase"] == "repair_generation"
-    assert debug["model_calls"][2]["raw_response"] == result["code"]
+    assert debug["model_calls"][1]["phase"] == "repair_generation"
+    assert debug["model_calls"][1]["raw_response"] == result["code"]
+    assert debug["model_calls"][2]["phase"] == "semantic_validation"
 
 
 def test_generation_service_returns_clarification_for_ambiguous_roots() -> None:
@@ -798,7 +1491,7 @@ def test_generation_service_returns_clarification_for_ambiguous_roots() -> None:
     assert result["validator_report"]["status"] == "pass"
 
 
-def test_generation_service_stops_after_repeated_failure_class_after_repair() -> None:
+def test_generation_service_asks_for_feedback_after_repeated_invalid_shape_after_repair() -> None:
     service = GenerationService(
         model_adapter=ScriptedModelAdapter(
             [
@@ -828,15 +1521,62 @@ def test_generation_service_stops_after_repeated_failure_class_after_repair() ->
         risk_tags=["array_indexing", "empty_array"],
     )
 
-    assert result["validation_status"] == "bounded_failure"
+    assert result["validation_status"] == "clarification_requested"
+    assert result["stop_reason"] == "clarification_requested"
     assert result["repair_count"] == 1
-    assert result["clarification_count"] == 0
+    assert result["clarification_count"] == 1
     assert result["critic_report"] == {
-        "action": "finalize",
+        "action": "clarification",
         "failure_class": "repair_oscillation",
-        "message": "Repair loop started oscillating between previously seen candidates or failure patterns.",
+        "message": "Цикл исправления начал зацикливаться на уже встречавшихся вариантах или типах ошибок.",
+        "clarification_question": "Цикл исправления повторяет ту же ошибку. Что нужно изменить перед следующей попыткой?",
     }
     assert result["validator_report"]["status"] == "fail"
+
+
+def test_generation_service_asks_for_feedback_after_four_non_oscillating_repairs() -> None:
+    service = GenerationService(
+        model_adapter=ScriptedModelAdapter(
+            [
+                "return wf.vars.emails[1]",
+                "return wf.vars.emails",
+                "return nil",
+                'return "wrong"',
+                "return 42",
+            ]
+        )
+    )
+
+    result = service.generate(
+        task_text="Get the last email from the list.",
+        provided_context=json.dumps(
+            {
+                "wf": {
+                    "vars": {
+                        "emails": [
+                            "user1@example.com",
+                            "user2@example.com",
+                        ]
+                    }
+                }
+            }
+        ),
+        archetype="simple_extraction",
+        output_mode="raw_lua",
+        input_roots=["wf.vars.emails"],
+        risk_tags=["array_indexing", "empty_array"],
+    )
+
+    assert result["validation_status"] == "clarification_requested"
+    assert result["stop_reason"] == "clarification_requested"
+    assert result["repair_count"] == 4
+    assert result["clarification_count"] == 1
+    assert result["critic_report"] == {
+        "action": "clarification",
+        "failure_class": "runtime_behavior_mismatch",
+        "message": "Лимит исправлений исчерпан или после последнего исправления снова повторилась та же ошибка.",
+        "clarification_question": "Return the last element from wf.vars.emails and nil when the array is empty.",
+    }
 
 
 def test_generation_service_prefers_semantic_intent_for_clear_field_conflict() -> None:
@@ -915,7 +1655,7 @@ def test_generation_service_prefers_semantic_intent_for_clear_field_conflict() -
     assert result["critic_report"] == {
         "action": "repair",
         "failure_class": "semantic_mismatch",
-        "message": "Prefer semantic intent over the pattern-based rule for explicit field-operation tasks.",
+        "message": "Для задач с явными операциями над полями предпочитай семантическое намерение, а не шаблонное правило.",
         "repair_prompt": "Set ID, ENTITY_ID, and CALL to nil directly and keep all other fields untouched.",
     }
     first_iteration = result["validator_report"]["iterations"][0]
@@ -978,7 +1718,7 @@ def test_generation_service_returns_validator_conflict_for_unresolved_pattern_vs
     assert result["critic_report"] == {
         "action": "finalize",
         "failure_class": "validator_conflict",
-        "message": "Semantic and pattern-based validators disagree on the repair direction.",
+        "message": "Семантический и шаблонный валидаторы расходятся в направлении исправления.",
     }
 
 
@@ -1044,20 +1784,13 @@ def test_generation_service_accepts_direct_named_field_clearing_when_semantics_p
     assert first_iteration["semantic_report"]["status"] == "pass"
 
 
-def test_generation_service_marks_repair_oscillation_when_candidate_returns_to_previous_shape() -> None:
+def test_generation_service_asks_for_feedback_when_candidate_returns_to_previous_shape() -> None:
     service = GenerationService(
         model_adapter=ScriptedModelAdapter(
             [
                 "return wf.data.emails[1]",
-                SEMANTIC_PASS_RESPONSE,
                 "return wf.vars.emails[1]",
-                (
-                    '{"status":"fail","failure_class":"semantic_mismatch","message":"The task asks for the last email, '
-                    'but the candidate returns the first item.","repairable":true,"ambiguous":false,'
-                    '"suggestion":"Return the last element of wf.vars.emails instead of the first one."}'
-                ),
                 "return wf.data.emails[1]",
-                SEMANTIC_PASS_RESPONSE,
             ]
         )
     )
@@ -1082,27 +1815,72 @@ def test_generation_service_marks_repair_oscillation_when_candidate_returns_to_p
         risk_tags=["array_indexing", "empty_array"],
     )
 
-    assert result["validation_status"] == "bounded_failure"
+    assert result["validation_status"] == "clarification_requested"
+    assert result["stop_reason"] == "clarification_requested"
     assert result["repair_count"] == 2
+    assert result["clarification_count"] == 1
     assert result["critic_report"] == {
-        "action": "finalize",
+        "action": "clarification",
         "failure_class": "repair_oscillation",
-        "message": "Repair loop started oscillating between previously seen candidates or failure patterns.",
+        "message": "Цикл исправления начал зацикливаться на уже встречавшихся вариантах или типах ошибок.",
+        "clarification_question": "Цикл исправления повторяет ту же ошибку. Что нужно изменить перед следующей попыткой?",
     }
 
 
-def test_generation_service_keeps_best_candidate_after_three_repairs() -> None:
+def test_generation_service_asks_for_feedback_when_runtime_behavior_repeats() -> None:
     service = GenerationService(
         model_adapter=ScriptedModelAdapter(
             [
                 "return wf.vars.emails[1]",
-                (
-                    '{"status":"fail","failure_class":"semantic_mismatch","message":"The task asks for the last email, '
-                    'but the candidate returns the first item.","repairable":true,"ambiguous":false,'
-                    '"suggestion":"Return the last element of wf.vars.emails instead of the first one."}'
+                "\n".join(
+                    [
+                        "local emails = wf.vars.emails",
+                        "return emails[1]",
+                    ]
                 ),
-                "Here is the repaired code:\nreturn wf.vars.emails[#wf.vars.emails]",
+            ]
+        )
+    )
+
+    result = service.generate(
+        task_text="Get the last email from the list.",
+        provided_context=json.dumps(
+            {
+                "wf": {
+                    "vars": {
+                        "emails": [
+                            "user1@example.com",
+                            "user2@example.com",
+                        ]
+                    }
+                }
+            }
+        ),
+        archetype="simple_extraction",
+        output_mode="raw_lua",
+        input_roots=["wf.vars.emails"],
+        risk_tags=["array_indexing", "empty_array"],
+    )
+
+    assert result["validation_status"] == "clarification_requested"
+    assert result["stop_reason"] == "clarification_requested"
+    assert result["repair_count"] == 1
+    assert result["clarification_count"] == 1
+    assert result["critic_report"] == {
+        "action": "clarification",
+        "failure_class": "repair_oscillation",
+        "message": "Цикл исправления начал зацикливаться на уже встречавшихся вариантах или типах ошибок.",
+        "clarification_question": "Цикл исправления повторяет ту же ошибку. Что нужно изменить перед следующей попыткой?",
+    }
+
+
+def test_generation_service_asks_for_feedback_after_three_repair_attempts_with_repeated_shape() -> None:
+    service = GenerationService(
+        model_adapter=ScriptedModelAdapter(
+            [
+                "return wf.vars.emails[1]",
                 "{}",
+                "",
                 "",
             ]
         )
@@ -1128,17 +1906,53 @@ def test_generation_service_keeps_best_candidate_after_three_repairs() -> None:
         risk_tags=["array_indexing", "empty_array"],
     )
 
-    assert result["validation_status"] == "bounded_failure"
+    assert result["validation_status"] == "clarification_requested"
+    assert result["stop_reason"] == "clarification_requested"
     assert result["repair_count"] == 3
-    assert result["code"] == "return wf.vars.emails[1]"
-    assert result["final_candidate_source"] == "best_candidate"
-    assert result["final_candidate_iteration_index"] == 0
+    assert result["clarification_count"] == 1
+    assert result["code"] == "Цикл исправления повторяет ту же ошибку. Что нужно изменить перед следующей попыткой?"
+    assert result["final_candidate_source"] == "clarification_question"
     assert result["critic_report_iteration_index"] == 3
     assert result["critic_report"] == {
-        "action": "finalize",
-        "failure_class": "empty_output",
-        "message": "Repair budget exhausted or the same failure repeated after the latest repair.",
+        "action": "clarification",
+        "failure_class": "repair_oscillation",
+        "message": "Цикл исправления начал зацикливаться на уже встречавшихся вариантах или типах ошибок.",
+        "clarification_question": "Цикл исправления повторяет ту же ошибку. Что нужно изменить перед следующей попыткой?",
     }
+
+
+def test_detect_repair_oscillation_marks_repeated_invalid_shape_signature() -> None:
+    assert _detect_repair_oscillation(
+        current_fingerprint="candidate-b",
+        current_behavioral_fingerprint=None,
+        current_invalid_shape_signature="invalid_json:response:Candidate is not valid JSON.",
+        current_disallowed_root_signature=None,
+        current_failure_class=None,
+        prior_fingerprints=["candidate-a"],
+        behavioral_history=[],
+        invalid_shape_history=["invalid_json:response:Candidate is not valid JSON."],
+        disallowed_root_history=[],
+        failure_history=[],
+    )
+
+
+def test_detect_repair_oscillation_marks_repeated_disallowed_root_signature() -> None:
+    assert _detect_repair_oscillation(
+        current_fingerprint="candidate-b",
+        current_behavioral_fingerprint=None,
+        current_invalid_shape_signature=None,
+        current_disallowed_root_signature=(
+            "disallowed_data_root:response:Candidate references wf.data.emails instead of wf.vars.emails."
+        ),
+        current_failure_class=None,
+        prior_fingerprints=["candidate-a"],
+        behavioral_history=[],
+        invalid_shape_history=[],
+        disallowed_root_history=[
+            "disallowed_data_root:response:Candidate references wf.data.emails instead of wf.vars.emails."
+        ],
+        failure_history=[],
+    )
 
 
 def test_generation_service_accepts_domain_datetime_helper_for_unix_conversion() -> None:
@@ -1460,6 +2274,280 @@ def test_generation_service_accepts_nil_tags_empty_array_false_positive() -> Non
     assert result["validator_report"]["iterations"][0]["semantic_report"]["status"] == "pass"
 
 
+def test_generation_service_accepts_strict_type_count_false_positive() -> None:
+    service = GenerationService(
+        model_adapter=ScriptedModelAdapter(
+            [
+                "\n".join(
+                    [
+                        "local count = 0",
+                        "for _, row in ipairs(wf.vars.rows) do",
+                        '  if type(row.fieldA) == "string" and type(row.fieldB) == "number" then',
+                        "    count = count + 1",
+                        "  end",
+                        "end",
+                        "return count",
+                    ]
+                ),
+                (
+                    '{"status":"fail","failure_class":"semantic_mismatch","message":"Should accept numeric strings.",'
+                    '"repairable":true,"ambiguous":false,"suggestion":"Use tonumber(fieldB)."}'
+                ),
+            ]
+        )
+    )
+
+    result = service.generate(
+        task_text="Посчитай количество строк, где fieldA является строкой, а fieldB является числом.",
+        provided_context=json.dumps({"wf": {"vars": {"rows": [{"fieldA": "ok", "fieldB": 1}]}}}),
+        archetype="transformation",
+        output_mode="raw_lua",
+        input_roots=["wf.vars.rows"],
+        risk_tags=["numeric_transform"],
+        debug=True,
+    )
+
+    assert result["validation_status"] == "passed"
+    assert result["validator_report"]["iterations"][0]["semantic_report"]["status"] == "pass"
+
+
+def test_generation_service_accepts_iso_date_string_compare_false_positive() -> None:
+    service = GenerationService(
+        model_adapter=ScriptedModelAdapter(
+            [
+                "\n".join(
+                    [
+                        "local invoices = wf.vars.invoices",
+                        "local currentDate = wf.initVariables.currentDate",
+                        "for _, invoice in ipairs(invoices) do",
+                        "  if invoice.dueDate and invoice.dueDate < currentDate then",
+                        "    return invoice",
+                        "  end",
+                        "end",
+                        "return nil",
+                    ]
+                ),
+                (
+                    '{"status":"fail","failure_class":"semantic_mismatch","message":"String comparison used for date comparison.",'
+                    '"repairable":true,"ambiguous":false,"suggestion":"Parse dates as timestamps."}'
+                ),
+            ]
+        )
+    )
+
+    result = service.generate(
+        task_text="Найди первый просроченный invoice, у которого dueDate меньше currentDate.",
+        provided_context=json.dumps(
+            {
+                "wf": {
+                    "vars": {"invoices": [{"dueDate": "2026-04-01"}]},
+                    "initVariables": {"currentDate": "2026-04-05"},
+                }
+            }
+        ),
+        archetype="transformation",
+        output_mode="raw_lua",
+        input_roots=["wf.initVariables.currentDate", "wf.vars.invoices"],
+        risk_tags=["nil_handling", "init_variables"],
+        debug=True,
+    )
+
+    assert result["validation_status"] == "passed"
+    assert result["validator_report"]["iterations"][0]["semantic_report"]["status"] == "pass"
+
+
+def test_generation_service_accepts_dd_mm_yyyy_iso_conversion_false_positive() -> None:
+    service = GenerationService(
+        model_adapter=ScriptedModelAdapter(
+            [
+                "\n".join(
+                    [
+                        "local date = wf.vars.deliveryDate",
+                        'local day, month, year = string.match(date, "(%d%d)%.(%d%d)%.(%d%d%d%d)")',
+                        'return string.format("%s-%s-%s", year, month, day)',
+                    ]
+                ),
+                (
+                    '{"status":"fail","failure_class":"semantic_mismatch","message":"Missing date range validation.",'
+                    '"repairable":true,"ambiguous":false,"suggestion":"Validate month and day ranges."}'
+                ),
+            ]
+        )
+    )
+
+    result = service.generate(
+        task_text="Преобразуй дату из формата DD.MM.YYYY в YYYY-MM-DD.",
+        provided_context=json.dumps({"wf": {"vars": {"deliveryDate": "15.04.2026"}}}),
+        archetype="datetime_conversion",
+        output_mode="raw_lua",
+        input_roots=["wf.vars.deliveryDate"],
+        risk_tags=[],
+        debug=True,
+    )
+
+    assert result["validation_status"] == "passed"
+    assert result["validator_report"]["iterations"][0]["semantic_report"]["status"] == "pass"
+
+
+def test_generation_service_accepts_nested_tax_code_array_projection_false_positive() -> None:
+    service = GenerationService(
+        model_adapter=ScriptedModelAdapter(
+            [
+                "\n".join(
+                    [
+                        "local result = _utils.array.new()",
+                        "for _, invoice in ipairs(wf.vars.invoices) do",
+                        "  for _, line in ipairs(invoice.lines) do",
+                        "    table.insert(result, line.taxCode)",
+                        "  end",
+                        "end",
+                        "return result",
+                    ]
+                ),
+                (
+                    '{"status":"fail","failure_class":"semantic_mismatch","message":"The result array is not initialized.",'
+                    '"repairable":true,"ambiguous":false,"suggestion":"Initialize result before table.insert."}'
+                ),
+            ]
+        )
+    )
+
+    result = service.generate(
+        task_text="Из массива invoices собери единый массив taxCode из всех lines.",
+        provided_context=json.dumps({"wf": {"vars": {"invoices": [{"lines": [{"taxCode": "T1"}]}]}}}),
+        archetype="filtering",
+        output_mode="raw_lua",
+        input_roots=["wf.vars.invoices"],
+        risk_tags=["array_allocation"],
+        debug=True,
+    )
+
+    assert result["validation_status"] == "passed"
+    assert result["validator_report"]["iterations"][0]["semantic_report"]["status"] == "pass"
+
+
+def test_generation_service_accepts_in_place_array_field_enrichment_false_positive() -> None:
+    service = GenerationService(
+        model_adapter=ScriptedModelAdapter(
+            [
+                "\n".join(
+                    [
+                        "for _, file in ipairs(wf.vars.files) do",
+                        '  file.isImage = (file.extension == "png" or file.extension == "jpg")',
+                        "end",
+                        "return wf.vars.files",
+                    ]
+                ),
+                (
+                    '{"status":"fail","failure_class":"semantic_mismatch","message":"Must allocate a new result array.",'
+                    '"repairable":true,"ambiguous":false,"suggestion":"Use _utils.array.new()."}'
+                ),
+            ]
+        )
+    )
+
+    result = service.generate(
+        task_text=(
+            "Для каждого файла в files добавь boolean-поле isImage: true, если extension равно png или jpg, "
+            "иначе false. Можно обновлять исходные объекты."
+        ),
+        provided_context=json.dumps({"wf": {"vars": {"files": [{"extension": "png"}, {"extension": "pdf"}]}}}),
+        archetype="filtering",
+        output_mode="raw_lua",
+        input_roots=["wf.vars.files"],
+        risk_tags=["array_allocation"],
+        debug=True,
+    )
+
+    assert result["validation_status"] == "passed"
+    first_iteration = result["validator_report"]["iterations"][0]
+    assert first_iteration["principle_report"]["status"] == "pass"
+    assert first_iteration["semantic_report"]["status"] == "pass"
+
+
+def test_generation_service_accepts_alias_conditional_in_place_array_field_enrichment_false_positive() -> None:
+    service = GenerationService(
+        model_adapter=ScriptedModelAdapter(
+            [
+                "\n".join(
+                    [
+                        "local files = wf.vars.files",
+                        "for _, file in ipairs(files) do",
+                        '  if file.extension == "png" or file.extension == "jpg" then',
+                        "    file.isImage = true",
+                        "  else",
+                        "    file.isImage = false",
+                        "  end",
+                        "end",
+                        "return files",
+                    ]
+                ),
+                (
+                    '{"status":"fail","failure_class":"semantic_mismatch","message":"Must allocate a new result array.",'
+                    '"repairable":true,"ambiguous":false,"suggestion":"Use _utils.array.new()."}'
+                ),
+            ]
+        )
+    )
+
+    result = service.generate(
+        task_text=(
+            "Для каждого файла в files добавь boolean-поле isImage: true, если extension равно png или jpg, "
+            "иначе false. Можно обновлять исходные объекты."
+        ),
+        provided_context=json.dumps({"wf": {"vars": {"files": [{"extension": "png"}, {"extension": "pdf"}]}}}),
+        archetype="filtering",
+        output_mode="raw_lua",
+        input_roots=["wf.vars.files"],
+        risk_tags=["array_allocation"],
+        debug=True,
+    )
+
+    assert result["validation_status"] == "passed"
+    first_iteration = result["validator_report"]["iterations"][0]
+    assert first_iteration["principle_report"]["status"] == "pass"
+    assert first_iteration["semantic_report"]["status"] == "pass"
+
+
+def test_generation_service_keeps_object_rebuild_field_loss_failure() -> None:
+    service = GenerationService(
+        model_adapter=ScriptedModelAdapter(
+            [
+                "\n".join(
+                    [
+                        "local result = _utils.array.new()",
+                        "for _, product in ipairs(wf.vars.products) do",
+                        "  local normalizedSku = string.upper(product.sku)",
+                        "  table.insert(result, {",
+                        "    sku = product.sku,",
+                        "    normalizedSku = normalizedSku",
+                        "  })",
+                        "end",
+                        "return result",
+                    ]
+                ),
+                (
+                    '{"status":"fail","failure_class":"semantic_mismatch","message":"Drops existing product fields.",'
+                    '"repairable":false,"ambiguous":false,"suggestion":"Preserve the original product object."}'
+                ),
+            ]
+        )
+    )
+
+    result = service.generate(
+        task_text="Для каждого продукта в products добавь поле normalizedSku в верхнем регистре.",
+        provided_context=json.dumps({"wf": {"vars": {"products": [{"sku": "ab-1", "name": "A"}]}}}),
+        archetype="filtering",
+        output_mode="raw_lua",
+        input_roots=["wf.vars.products"],
+        risk_tags=["array_allocation"],
+        debug=True,
+    )
+
+    assert result["validation_status"] == "clarification_requested"
+    assert result["validator_report"]["iterations"][0]["semantic_report"]["status"] == "fail"
+
+
 def test_generation_service_repairs_patch_mode_path_keys_with_tool() -> None:
     service = GenerationService(
         model_adapter=ScriptedModelAdapter(
@@ -1483,7 +2571,7 @@ def test_generation_service_repairs_patch_mode_path_keys_with_tool() -> None:
 
     assert result["validation_status"] == "repaired"
     assert result["code"] == '{"squared":"lua{return wf.vars.number ^ 2}lua"}'
-    assert result["debug"]["model_calls"][2]["repair_source"] == "deterministic_tool"
+    assert any(call.get("repair_source") == "deterministic_tool" for call in result["debug"]["model_calls"])
 
 
 def test_generation_service_repairs_nested_full_rewrite_patch_payload_with_tool() -> None:
@@ -1509,7 +2597,7 @@ def test_generation_service_repairs_nested_full_rewrite_patch_payload_with_tool(
 
     assert result["validation_status"] == "repaired"
     assert result["code"] == '{"squared":"lua{return wf.vars.number ^ 2}lua"}'
-    assert result["debug"]["model_calls"][2]["repair_source"] == "deterministic_tool"
+    assert any(call.get("repair_source") == "deterministic_tool" for call in result["debug"]["model_calls"])
 
 
 def test_generation_service_exposes_layered_reports_before_critic() -> None:

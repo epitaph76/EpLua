@@ -8,6 +8,7 @@
 - `docker/api/Dockerfile` для API-образа с уже встроенными `stylua`, `luacheck`, `lua5.4`;
 - связка `ollama` + `api` для локальной проверки;
 - init-сервис, который либо делает `ollama pull`, либо создаёт модель из локального `.gguf`.
+- CLI `luamts` внутри API-контейнера для `generate`, `doctor`, `bench`, `vram-check`.
 
 При этом здесь **ещё нет**:
 
@@ -52,6 +53,22 @@ docker compose up --build
 После первого успешного импорта модель останется в `ollama-data`, и повторный старт сможет её переиспользовать без нового `create`.
 
 Параметры `OLLAMA_PUBLISHED_PORT` и `API_PUBLISHED_PORT` нужны, если локальные процессы уже занимают `11434` и `8011`.
+
+Основной запуск остаётся одной командой:
+
+```powershell
+docker compose up --build
+```
+
+После старта CLI запускается через API-контейнер:
+
+```powershell
+docker compose exec api luamts doctor
+docker compose exec api luamts generate --mode release --task "Из массива emails верни последний email."
+docker compose exec api luamts
+```
+
+В интерактивном режиме plain text отправляется как задача генерации, а режимы меняются slash-командами: `/debug`, `/release`, `/model <tag>`, `/allow-cloud on|off`, `/with-api`, `/without-api`, `/exit`.
 
 ## Что уже зафиксировано
 

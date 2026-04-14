@@ -18,6 +18,8 @@ if str(API_ROOT) not in sys.path:
     sys.path.append(str(API_ROOT))
 
 from packages.benchmark.principles import evaluate_case_by_principles  # noqa: E402
+from errors import ApiError  # noqa: E402
+from runtime_policy import DEFAULT_MODEL_TAG, enforce_model_policy  # noqa: E402
 from services.generation import GenerationService  # noqa: E402
 
 DATASETS = (
@@ -26,8 +28,21 @@ DATASETS = (
     ("lua_tasks_100_cases", REPO_ROOT / "benchmark" / "lua_tasks_100_cases.json"),
     ("lua_tasks_additional_200_cases", REPO_ROOT / "benchmark" / "lua_tasks_additional_200_cases.json"),
 )
-MODEL = os.environ.get("OLLAMA_MODEL", "qwen3-coder:480b-cloud")
+MODEL = os.environ.get("OLLAMA_MODEL", DEFAULT_MODEL_TAG)
 BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
+BENCHMARK_MODE = os.environ.get("BENCHMARK_MODE", "release")
+
+
+def _default_model() -> str:
+    return os.environ.get("OLLAMA_MODEL", DEFAULT_MODEL_TAG)
+
+
+def _ensure_benchmark_model_allowed(model: str, mode: str) -> None:
+    normalized_mode = "release" if mode in {"release", "submit"} else mode
+    try:
+        enforce_model_policy(model, mode=normalized_mode)
+    except ApiError as exc:
+        raise SystemExit(exc.message) from exc
 
 
 def _default_output_path(*, now: datetime | None = None, model: str | None = None) -> Path:
@@ -43,6 +58,7 @@ OUTPUT_PATH = Path(os.environ.get("BENCHMARK_REPORT_PATH", str(DEFAULT_OUTPUT_PA
 
 
 def main() -> None:
+    _ensure_benchmark_model_allowed(MODEL, BENCHMARK_MODE)
     os.environ.setdefault("OLLAMA_MODEL", MODEL)
     os.environ.setdefault("OLLAMA_BASE_URL", BASE_URL)
     os.environ.setdefault("OLLAMA_REQUEST_TIMEOUT", "420")
@@ -55,6 +71,7 @@ def main() -> None:
             "generated_at_utc": datetime.now(UTC).isoformat(),
             "model": MODEL,
             "base_url": BASE_URL,
+            "mode": BENCHMARK_MODE,
             "case_count": len(cases),
             "datasets": [dataset_name for dataset_name, _ in DATASETS],
             "notes": [

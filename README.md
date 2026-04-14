@@ -184,12 +184,37 @@ Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:8011/generate' -ContentTyp
 docker compose up --build
 ```
 
+Эта команда поднимает весь локальный runtime: `ollama`, init-сервис модели и `api`. В release/demo контуре не нужен внешний Ollama-процесс и не используются внешние AI API.
+
 Первый запуск может занять заметное время, потому что сервис `ollama-pull` один раз скачивает выбранную модель в volume.
 
 После старта:
 
 - `Ollama` доступен на `http://localhost:11434`
 - API доступен на `http://localhost:8011`
+
+CLI доступен внутри API-контейнера:
+
+```bash
+docker compose exec api luamts doctor
+docker compose exec api luamts generate --mode release --task "Из массива emails верни последний email."
+docker compose exec api luamts
+```
+
+`luamts generate` в release mode идёт через `/generate` и полный quality loop. Runtime параметры фиксируются как `num_ctx=4096`, `num_predict=256`, `batch=1`, `parallel=1`; debug-эксперименты с model/options делаются только через `--mode debug`.
+
+Если запустить просто `luamts`, откроется интерактивный режим: обычный текст считается задачей на генерацию, а режим и модель меняются slash-командами:
+
+```text
+/debug
+/allow-cloud on
+/model gpt-oss:20b-cloud
+Верни Lua-код: последний email из wf.vars.emails
+/release
+/exit
+```
+
+В интерактивном режиме можно писать JSON-контекст в конце строки: CLI отделит его от задачи и передаст в API как `provided_context`.
 
 Модель для контейнера можно переопределить через переменную окружения:
 

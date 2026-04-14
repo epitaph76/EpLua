@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from packages.orchestrator.task_spec import TaskSpec
+
 
 @dataclass(frozen=True)
 class ValidationFinding:
@@ -32,6 +34,7 @@ class ValidatorReport:
     findings: tuple[ValidationFinding, ...] = ()
     normalized_candidate: str | None = None
     skipped_reason: str | None = None
+    metadata: dict[str, object] | None = None
 
     def to_dict(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -43,6 +46,8 @@ class ValidatorReport:
             payload["normalized_candidate"] = self.normalized_candidate
         if self.skipped_reason is not None:
             payload["skipped_reason"] = self.skipped_reason
+        if self.metadata is not None:
+            payload["metadata"] = self.metadata
         return payload
 
 
@@ -53,6 +58,7 @@ class ValidationSnapshot:
     syntax_report: ValidatorReport
     static_report: ValidatorReport
     principle_report: ValidatorReport
+    runtime_report: ValidatorReport
     semantic_report: ValidatorReport
     rule_report: ValidatorReport
 
@@ -63,6 +69,7 @@ class ValidationSnapshot:
             "syntax_report": self.syntax_report.to_dict(),
             "static_report": self.static_report.to_dict(),
             "principle_report": self.principle_report.to_dict(),
+            "runtime_report": self.runtime_report.to_dict(),
             "semantic_report": self.semantic_report.to_dict(),
             "rule_report": self.rule_report.to_dict(),
         }
@@ -81,9 +88,44 @@ class ValidationSummary:
 
 
 @dataclass(frozen=True)
+class ValidationBundle:
+    task_spec: TaskSpec
+    current_candidate: str
+    format_report: ValidatorReport
+    syntax_report: ValidatorReport
+    static_report: ValidatorReport
+    principle_report: ValidatorReport
+    runtime_report: ValidatorReport
+    semantic_report: ValidatorReport
+    final_failure_classes: tuple[str, ...]
+    repair_priority: tuple[str, ...]
+    behavioral_fingerprint: str | None = None
+    invalid_shape_signature: str | None = None
+    disallowed_root_signature: str | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "task_spec": self.task_spec.to_dict(),
+            "current_candidate": self.current_candidate,
+            "format_report": self.format_report.to_dict(),
+            "syntax_report": self.syntax_report.to_dict(),
+            "static_report": self.static_report.to_dict(),
+            "principle_report": self.principle_report.to_dict(),
+            "runtime_report": self.runtime_report.to_dict(),
+            "semantic_report": self.semantic_report.to_dict(),
+            "final_failure_classes": list(self.final_failure_classes),
+            "repair_priority": list(self.repair_priority),
+            "behavioral_fingerprint": self.behavioral_fingerprint,
+            "invalid_shape_signature": self.invalid_shape_signature,
+            "disallowed_root_signature": self.disallowed_root_signature,
+        }
+
+
+@dataclass(frozen=True)
 class QualityOutcome:
     code: str
     validation_status: str
+    stop_reason: str
     trace: tuple[str, ...]
     validator_summary: ValidationSummary
     critic_report: dict[str, object] | None
@@ -100,6 +142,7 @@ class QualityOutcome:
         payload: dict[str, object] = {
             "code": self.code,
             "validation_status": self.validation_status,
+            "stop_reason": self.stop_reason,
             "trace": list(self.trace),
             "validator_report": self.validator_summary.to_dict(),
             "critic_report": self.critic_report,

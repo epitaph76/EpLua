@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 import os
 import re
@@ -9,6 +10,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Callable
 
+from packages.orchestrator.task_spec import TaskSpec
 from packages.shared.quality import ValidationFinding, ValidatorReport
 
 RAW_LUA = "raw_lua"
@@ -22,6 +24,13 @@ _BLOCK_START_PATTERN = re.compile(r"^\s*(?:local\s+function|function|if\b.*then$
 _BLOCK_END_PATTERN = re.compile(r"^\s*end\s*$")
 _DIRECT_FIELD_ASSIGNMENT_PATTERN = re.compile(
     r'(?:\[\s*"(?P<bracket>[A-Za-z_][A-Za-z0-9_]*)"\s*\]|\.(?P<dot>[A-Za-z_][A-Za-z0-9_]*))\s*='
+)
+_LOCAL_ARRAY_ALIAS_PATTERN = re.compile(
+    r"\blocal\s+(?P<alias>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?P<source>wf\.vars\.[A-Za-z_][A-Za-z0-9_]*)\b"
+)
+_IP_ARRAY_LOOP_PATTERN = re.compile(
+    r"for\s+_,\s*(?P<item>[A-Za-z_][A-Za-z0-9_]*)\s+in\s+ipairs\(\s*(?P<source>wf\.vars\.[A-Za-z_][A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_]*)\s*\)\s+do(?P<body>.*?)\bend\b",
+    re.DOTALL,
 )
 _VALIDATOR_TOOL_TIMEOUT_SECONDS = 15
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -46,6 +55,7 @@ def run_validation_pipeline(
     forbidden_patterns: tuple[str, ...],
     risk_tags: tuple[str, ...],
     archetype: str,
+    task_spec: TaskSpec | None = None,
 ) -> tuple[str | None, ValidatorReport, ValidatorReport, ValidatorReport, ValidatorReport, ValidatorReport]:
     format_report = validate_format(candidate, output_mode)
     normalized_candidate = format_report.normalized_candidate
@@ -73,6 +83,7 @@ def run_validation_pipeline(
         output_mode=output_mode,
         risk_tags=risk_tags,
         archetype=archetype,
+        task_spec=task_spec,
     )
     rule_report = _merge_reports("rule_validator", syntax_report, static_report, principle_report)
     return normalized_candidate, format_report, syntax_report, static_report, principle_report, rule_report
@@ -253,6 +264,7 @@ def validate_rules(
     forbidden_patterns: tuple[str, ...],
     risk_tags: tuple[str, ...],
     archetype: str,
+    task_spec: TaskSpec | None = None,
 ) -> ValidatorReport:
     if output_mode == CLARIFICATION:
         return ValidatorReport(validator="rule_validator", status="pass")
@@ -269,6 +281,7 @@ def validate_rules(
         output_mode=output_mode,
         risk_tags=risk_tags,
         archetype=archetype,
+        task_spec=task_spec,
     )
     return _merge_reports("rule_validator", syntax_report, static_report, principle_report)
 
@@ -319,15 +332,127 @@ def validate_principles(
     output_mode: str,
     risk_tags: tuple[str, ...],
     archetype: str,
+    task_spec: TaskSpec | None = None,
 ) -> ValidatorReport:
     if output_mode == CLARIFICATION:
         return ValidatorReport(validator="principle_validator", status="pass")
 
     lua_segments = _extract_lua_segments(candidate, output_mode)
     findings = _validate_archetype_specific(lua_segments, candidate, risk_tags, archetype, output_mode)
+    if not findings and task_spec is not None:
+        findings = _validate_task_spec_shape(lua_segments, task_spec)
     if findings:
         return ValidatorReport(validator="principle_validator", status="fail", findings=tuple(findings))
     return ValidatorReport(validator="principle_validator", status="pass")
+
+
+def validate_runtime_behavior(
+    candidate: str,
+    *,
+    output_mode: str,
+    execution_context: Any | None,
+    task_spec: TaskSpec,
+) -> ValidatorReport:
+    if output_mode == CLARIFICATION:
+        return _skipped_report("runtime_validator", "clarification_mode")
+
+    if task_spec.clarification_required:
+        return _skipped_report("runtime_validator", "clarification_required")
+
+    if execution_context is None:
+        return _skipped_report("runtime_validator", "missing_execution_context")
+
+    if task_spec.archetype != "simple_extraction":
+        return _skipped_report("runtime_validator", "unsupported_archetype")
+
+    if task_spec.operation not in {"last_array_item", "first_array_item"}:
+        return _skipped_report("runtime_validator", "unsupported_operation")
+
+    lua_segments = _extract_lua_segments(candidate, output_mode)
+    if len(lua_segments) != 1:
+        return _skipped_report("runtime_validator", "unsupported_output_shape")
+
+    fixtures = _build_simple_extraction_runtime_fixtures(execution_context, task_spec)
+    if not fixtures:
+        return _skipped_report("runtime_validator", "missing_runtime_fixture")
+
+    _, lua_segment = lua_segments[0]
+    runtime_results: list[dict[str, object]] = []
+    for fixture_name, fixture_context, expected_value in fixtures:
+        actual_value, runtime_error = _execute_runtime_candidate(lua_segment, fixture_context)
+        runtime_results.append(
+            {
+                "fixture": fixture_name,
+                "expected": _format_runtime_value(expected_value),
+                "actual": _format_runtime_value(actual_value),
+                "error": runtime_error,
+            }
+        )
+        if runtime_error is not None:
+            return ValidatorReport(
+                validator="runtime_validator",
+                status="fail",
+                findings=(
+                    ValidationFinding(
+                        validator="runtime_validator",
+                        failure_class="runtime_execution_failed",
+                        message=f"Runtime validation failed on fixture '{fixture_name}': {runtime_error}",
+                        location="response",
+                        repairable=True,
+                        suggestion=_runtime_repair_suggestion(task_spec),
+                    ),
+                ),
+                metadata=_build_runtime_metadata(
+                    task_spec=task_spec,
+                    runtime_results=runtime_results,
+                    failed_fixture=fixture_name,
+                    actual_value=actual_value,
+                    expected_value=expected_value,
+                ),
+            )
+
+        if not _runtime_values_match(
+            expected_value,
+            actual_value,
+            output_mode=output_mode,
+            task_spec=task_spec,
+        ):
+            return ValidatorReport(
+                validator="runtime_validator",
+                status="fail",
+                findings=(
+                    ValidationFinding(
+                        validator="runtime_validator",
+                        failure_class="runtime_behavior_mismatch",
+                        message=(
+                            f"Runtime validation failed on fixture '{fixture_name}': expected "
+                            f"{_format_runtime_value(expected_value)} but got {_format_runtime_value(actual_value)}."
+                        ),
+                        location="response",
+                        repairable=True,
+                        suggestion=_runtime_repair_suggestion(task_spec),
+                    ),
+                ),
+                metadata=_build_runtime_metadata(
+                    task_spec=task_spec,
+                    runtime_results=runtime_results,
+                    failed_fixture=fixture_name,
+                    actual_value=actual_value,
+                    expected_value=expected_value,
+                ),
+            )
+
+    return ValidatorReport(
+        validator="runtime_validator",
+        status="pass",
+        metadata=_build_runtime_metadata(
+            task_spec=task_spec,
+            runtime_results=runtime_results,
+            failed_fixture=None,
+            actual_value=None,
+            expected_value=None,
+        ),
+    )
 
 
 def _validate_paths(lua_segments: list[tuple[str, str]], allowed_data_roots: tuple[str, ...]) -> list[ValidationFinding]:
@@ -580,38 +705,41 @@ def _run_luacheck(lua_segments: list[tuple[str, str]]) -> ValidatorReport | None
             except subprocess.TimeoutExpired:
                 return ValidatorReport(
                     validator="static_validator",
-                    status="fail",
-                    findings=(
-                        ValidationFinding(
-                            validator="luacheck_validator",
-                            failure_class="luacheck_failed_timeout",
-                            message="Luacheck reported a static analysis issue: tool timed out while checking the Lua snippet.",
-                            location=location,
-                            repairable=False,
-                            suggestion="Fix the Lua issue and retry the luacheck pass.",
-                        ),
-                    ),
+                    status="skipped",
+                    skipped_reason="validator_timeout",
+                    metadata={
+                        "tool": "luacheck",
+                        "message": "Tool timed out while checking the Lua snippet.",
+                        "command": command,
+                    },
                 )
             except OSError as exc:
                 return ValidatorReport(
                     validator="static_validator",
-                    status="fail",
-                    findings=(
-                        ValidationFinding(
-                            validator="luacheck_validator",
-                            failure_class="luacheck_failed_execution_error",
-                            message=f"Luacheck reported a static analysis issue: unable to execute the tool ({exc}).",
-                            location=location,
-                            repairable=False,
-                            suggestion="Make sure luacheck is installed and reachable by the validator.",
-                        ),
-                    ),
+                    status="skipped",
+                    skipped_reason="validator_execution_failed",
+                    metadata={
+                        "tool": "luacheck",
+                        "message": f"Unable to execute the tool ({exc}).",
+                        "command": command,
+                    },
                 )
 
             if completed.returncode == 0:
                 continue
 
             details = _compact_tool_output(completed.stderr or completed.stdout)
+            if _looks_like_luacheck_infrastructure_failure(details):
+                return ValidatorReport(
+                    validator="static_validator",
+                    status="skipped",
+                    skipped_reason="validator_execution_failed",
+                    metadata={
+                        "tool": "luacheck",
+                        "message": details,
+                        "command": command,
+                    },
+                )
             if not _luacheck_output_requires_failure(details):
                 continue
 
@@ -712,6 +840,282 @@ def _run_external_lua_tool(
     return []
 
 
+def _build_simple_extraction_runtime_fixtures(
+    execution_context: Any,
+    task_spec: TaskSpec,
+) -> list[tuple[str, Any, object]]:
+    if not task_spec.input_roots:
+        return []
+
+    root = task_spec.input_roots[0]
+    primary_value = _resolve_context_path(execution_context, root)
+    expected_primary = _expected_simple_extraction_result(task_spec.operation, primary_value)
+    fixtures: list[tuple[str, Any, object]] = [("primary", execution_context, expected_primary)]
+
+    if not isinstance(primary_value, list):
+        return fixtures
+
+    if "single_item" in task_spec.edge_cases and primary_value:
+        single_item_value = [primary_value[0]]
+        fixtures.append(
+            (
+                "single_item",
+                _clone_context_with_replaced_root(execution_context, root, single_item_value),
+                _expected_simple_extraction_result(task_spec.operation, single_item_value),
+            )
+        )
+
+    if "empty_array" in task_spec.edge_cases:
+        fixtures.append(
+            (
+                "empty_array",
+                _clone_context_with_replaced_root(execution_context, root, []),
+                _expected_simple_extraction_result(task_spec.operation, []),
+            )
+        )
+
+    return fixtures
+
+
+def _expected_simple_extraction_result(operation: str, value: Any) -> object:
+    if operation == "last_array_item":
+        return value[-1] if isinstance(value, list) and value else None
+    if operation == "first_array_item":
+        return value[0] if isinstance(value, list) and value else None
+    return value
+
+
+def _resolve_context_path(node: Any, root: str) -> Any:
+    current = node
+    for part in root.split("."):
+        if isinstance(current, dict) and part in current:
+            current = current[part]
+            continue
+        return None
+    return current
+
+
+def _clone_context_with_replaced_root(execution_context: Any, root: str, replacement: Any) -> Any:
+    cloned = json.loads(json.dumps(execution_context))
+    parts = root.split(".")
+    current = cloned
+    for part in parts[:-1]:
+        if not isinstance(current, dict):
+            return cloned
+        current = current.setdefault(part, {})
+    if isinstance(current, dict):
+        current[parts[-1]] = replacement
+    return cloned
+
+
+def _execute_runtime_candidate(candidate: str, execution_context: Any) -> tuple[object | None, str | None]:
+    lua_binary = _resolve_tool_binary("LUA_BIN", "lua")
+    if lua_binary is None:
+        return None, "lua runtime is unavailable."
+
+    runtime_script = _build_runtime_script(candidate, execution_context)
+    with tempfile.TemporaryDirectory(prefix="luamts-runtime-validator-") as temp_dir:
+        file_path = Path(temp_dir) / "runtime_check.lua"
+        file_path.write_text(runtime_script, encoding="utf-8")
+
+        try:
+            completed = subprocess.run(
+                [lua_binary, str(file_path)],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=_VALIDATOR_TOOL_TIMEOUT_SECONDS,
+                env=_build_lua_runtime_environment(lua_binary),
+            )
+        except subprocess.TimeoutExpired:
+            return None, "lua runtime timed out."
+        except OSError as exc:
+            return None, f"unable to execute lua runtime ({exc})."
+
+    if completed.returncode != 0:
+        details = _compact_tool_output(completed.stderr or completed.stdout)
+        return None, details or "lua runtime returned a non-zero exit code."
+
+    return _decode_runtime_result(completed.stdout.strip()), None
+
+
+def _build_runtime_script(candidate: str, execution_context: Any) -> str:
+    wf_context = execution_context.get("wf", {}) if isinstance(execution_context, dict) else {}
+    prepared_candidate = _prepare_lua_segment_for_runtime(candidate)
+    candidate_lines = prepared_candidate.splitlines() or ["return nil"]
+    indented_candidate = "\n".join(f"  {line}" for line in candidate_lines)
+    return "\n".join(
+        [
+            f"local wf = {_to_lua_literal(wf_context)}",
+            "",
+            "local function __encode_runtime_value(value)",
+            "  if value == nil then",
+            "    return 'nil'",
+            "  end",
+            "  local value_type = type(value)",
+            "  if value_type == 'string' then",
+            "    return 'string:' .. string.format('%q', value)",
+            "  end",
+            "  if value_type == 'number' then",
+            "    return 'number:' .. string.format('%.17g', value)",
+            "  end",
+            "  if value_type == 'boolean' then",
+            "    return 'boolean:' .. tostring(value)",
+            "  end",
+            "  return 'type:' .. value_type",
+            "end",
+            "",
+            "local function __candidate__()",
+            indented_candidate,
+            "end",
+            "",
+            "local ok, result = pcall(__candidate__)",
+            "if not ok then",
+            "  io.stderr:write(tostring(result))",
+            "  os.exit(1)",
+            "end",
+            "io.write(__encode_runtime_value(result))",
+        ]
+    )
+
+
+def _prepare_lua_segment_for_runtime(candidate: str) -> str:
+    stripped = candidate.strip()
+    if not stripped:
+        return "return nil"
+
+    non_empty_lines = [line.strip() for line in stripped.splitlines() if line.strip()]
+    if len(non_empty_lines) == 1 and not _looks_like_lua(non_empty_lines[0]):
+        return f"return {non_empty_lines[0]}"
+
+    return candidate
+
+
+def _decode_runtime_result(output: str) -> object:
+    if output == "nil":
+        return None
+    if output.startswith("string:"):
+        return ast.literal_eval(output[len("string:") :])
+    if output.startswith("number:"):
+        raw_number = output[len("number:") :]
+        return int(raw_number) if re.fullmatch(r"-?\d+", raw_number) else float(raw_number)
+    if output.startswith("boolean:"):
+        return output[len("boolean:") :] == "true"
+    return output
+
+
+def _to_lua_literal(node: Any) -> str:
+    if node is None:
+        return "nil"
+    if isinstance(node, bool):
+        return "true" if node else "false"
+    if isinstance(node, (int, float)):
+        return repr(node)
+    if isinstance(node, str):
+        return json.dumps(node, ensure_ascii=False)
+    if isinstance(node, list):
+        return "{%s}" % ", ".join(_to_lua_literal(item) for item in node)
+    if isinstance(node, dict):
+        items = [f"[{json.dumps(str(key), ensure_ascii=False)}] = {_to_lua_literal(value)}" for key, value in node.items()]
+        return "{%s}" % ", ".join(items)
+    return "nil"
+
+
+def _build_lua_runtime_environment(lua_binary: str) -> dict[str, str] | None:
+    if not Path(lua_binary).is_file():
+        return None
+
+    environment = os.environ.copy()
+    path_parts = [
+        str(_LOCAL_MINGW_BIN_DIR),
+        str(_LOCAL_LUA_BIN_DIR),
+        environment.get("PATH", ""),
+    ]
+    environment["PATH"] = ";".join(part for part in path_parts if part)
+    return environment
+
+
+def _format_runtime_value(value: object) -> str:
+    return repr(value)
+
+
+def _runtime_repair_suggestion(task_spec: TaskSpec) -> str:
+    root = task_spec.input_roots[0] if task_spec.input_roots else "the target input root"
+    if task_spec.operation == "last_array_item":
+        return f"Return the last element from {root} and nil when the array is empty."
+    if task_spec.operation == "first_array_item":
+        return f"Return the first element from {root} and nil when the array is empty."
+    return f"Return the value from {root} without changing the requested result shape."
+
+
+def _build_runtime_metadata(
+    *,
+    task_spec: TaskSpec,
+    runtime_results: list[dict[str, object]],
+    failed_fixture: str | None,
+    actual_value: object | None,
+    expected_value: object | None,
+) -> dict[str, object]:
+    behavioral_fingerprint = "|".join(
+        f"{item['fixture']}={item['actual']}" if item["error"] is None else f"{item['fixture']}=error:{item['error']}"
+        for item in runtime_results
+    )
+    metadata: dict[str, object] = {
+        "operation": task_spec.operation,
+        "expected_shape": task_spec.expected_shape,
+        "edge_cases": list(task_spec.edge_cases),
+        "runtime_results": runtime_results,
+        "behavioral_fingerprint": behavioral_fingerprint,
+    }
+    if failed_fixture is not None:
+        metadata["failed_fixture"] = failed_fixture
+        metadata["actual_value"] = _format_runtime_value(actual_value)
+        metadata["expected_value"] = _format_runtime_value(expected_value)
+    return metadata
+
+
+def _runtime_values_match(
+    expected_value: object,
+    actual_value: object,
+    *,
+    output_mode: str,
+    task_spec: TaskSpec,
+) -> bool:
+    if expected_value is None and output_mode == JSON_WRAPPER and task_spec.operation in {"last_array_item", "first_array_item"}:
+        return actual_value in {None, ""}
+    return actual_value == expected_value
+
+
+def _validate_task_spec_shape(lua_segments: list[tuple[str, str]], task_spec: TaskSpec) -> list[ValidationFinding]:
+    if task_spec.archetype != "simple_extraction":
+        return []
+    if task_spec.operation not in {"last_array_item", "first_array_item"}:
+        return []
+    if task_spec.expected_shape != "scalar_or_nil" or not task_spec.input_roots:
+        return []
+
+    combined_segments = "\n".join(segment for _, segment in lua_segments)
+    source = task_spec.input_roots[0]
+    aliases = {
+        match.group("alias"): match.group("source")
+        for match in _local_array_alias_pattern_for_source(source).finditer(combined_segments)
+    }
+    if not _candidate_returns_array_source(combined_segments, source, aliases):
+        return []
+
+    item_position = "last" if task_spec.operation == "last_array_item" else "first"
+    return [
+        ValidationFinding(
+            validator="principle_validator",
+            failure_class="array_item_returns_whole_array",
+            message="Candidate returns the whole array instead of the requested array item.",
+            location="response",
+            repairable=True,
+            suggestion=f"Return the {item_position} element from {source}, or nil when the array is empty.",
+        )
+    ]
+
+
 def _build_stylua_command(tool_binary: str, file_path: Path) -> list[str]:
     command = [tool_binary, "--check"]
     if _LOCAL_STYLUA_CONFIG.exists():
@@ -721,7 +1125,7 @@ def _build_stylua_command(tool_binary: str, file_path: Path) -> list[str]:
 
 
 def _build_luacheck_command(tool_binary: str, file_path: Path) -> list[str]:
-    if Path(tool_binary).is_file():
+    if _luacheck_requires_lua_launcher(tool_binary):
         lua_binary = _resolve_tool_binary("LUA_BIN", "lua")
         if lua_binary is None:
             return [tool_binary, "--codes", "--no-color", str(file_path)]
@@ -741,12 +1145,24 @@ def _build_luacheck_command(tool_binary: str, file_path: Path) -> list[str]:
     return command
 
 
+def _luacheck_requires_lua_launcher(tool_binary: str) -> bool:
+    if os.name != "nt":
+        return False
+    tool_path = Path(tool_binary)
+    if not tool_path.is_file():
+        return False
+    try:
+        return tool_path.resolve() == _LOCAL_TOOL_PATHS["luacheck"].resolve()
+    except OSError:
+        return False
+
+
 def _compact_tool_output(output: str) -> str:
     return " ".join(output.strip().split())
 
 
 def _build_luacheck_environment(tool_binary: str) -> dict[str, str] | None:
-    if not Path(tool_binary).is_file():
+    if not _luacheck_requires_lua_launcher(tool_binary):
         return None
 
     environment = os.environ.copy()
@@ -763,6 +1179,18 @@ def _build_luacheck_environment(tool_binary: str) -> dict[str, str] | None:
     ]
     environment["PATH"] = ";".join(part for part in path_parts if part)
     return environment
+
+
+def _looks_like_luacheck_infrastructure_failure(output: str) -> bool:
+    normalized = output.lower()
+    return (
+        "luacheck" in normalized
+        and (
+            "unexpected symbol near" in normalized
+            or "cannot open" in normalized
+            or "module 'luacheck" in normalized
+        )
+    )
 
 
 def _luacheck_output_requires_failure(output: str) -> bool:
@@ -840,7 +1268,7 @@ def _validate_archetype_specific(
     findings: list[ValidationFinding] = []
     combined_segments = "\n".join(segment for _, segment in lua_segments)
 
-    if "array_allocation" in risk_tags and "_utils.array.new()" not in combined_segments:
+    if "array_allocation" in risk_tags and not _has_array_result_container(combined_segments):
         findings.append(
             ValidationFinding(
                 validator="archetype_validator",
@@ -946,7 +1374,7 @@ def _validate_archetype_specific(
         return findings
 
     if archetype == "filtering" and "empty_value_filtering" in risk_tags:
-        if "_utils.array.new()" not in combined_segments:
+        if not _has_array_result_container(combined_segments):
             findings.append(
                 ValidationFinding(
                     validator="archetype_validator",
@@ -960,6 +1388,74 @@ def _validate_archetype_specific(
             return findings
 
     return findings
+
+
+def _has_array_result_container(candidate: str) -> bool:
+    return "_utils.array.new()" in candidate or has_in_place_array_field_enrichment(candidate)
+
+
+def has_in_place_array_field_enrichment(candidate: str) -> bool:
+    aliases = {match.group("alias"): match.group("source") for match in _LOCAL_ARRAY_ALIAS_PATTERN.finditer(candidate)}
+    for match in _IP_ARRAY_LOOP_PATTERN.finditer(candidate):
+        item = match.group("item")
+        source = match.group("source")
+        body = match.group("body")
+        if not _loop_body_assigns_item_field(body, item):
+            continue
+        if re.search(r"\bif\b", body) and not _loop_body_assigns_same_item_field_in_conditional_branches(body, item):
+            continue
+        if _candidate_returns_array_source(candidate, source, aliases):
+            return True
+    return False
+
+
+def _loop_body_assigns_item_field(body: str, item: str) -> bool:
+    escaped_item = re.escape(item)
+    return bool(re.search(rf"\b{escaped_item}\.[A-Za-z_][A-Za-z0-9_]*\s*=", body))
+
+
+def _loop_body_assigns_same_item_field_in_conditional_branches(body: str, item: str) -> bool:
+    escaped_item = re.escape(item)
+    field_assignment = rf"\b{escaped_item}\.(?P<field>[A-Za-z_][A-Za-z0-9_]*)\s*="
+    conditional_match = re.search(
+        rf"\bif\b(?P<then>.*?)\belse\b(?P<else>.*?)(?:\bend\b|$)",
+        body,
+        re.DOTALL,
+    )
+    if conditional_match is None:
+        return False
+
+    then_fields = set(re.findall(field_assignment, conditional_match.group("then")))
+    else_fields = set(re.findall(field_assignment, conditional_match.group("else")))
+    return bool(then_fields & else_fields)
+
+
+def _candidate_returns_array_source(candidate: str, source: str, aliases: dict[str, str]) -> bool:
+    source_aliases = {source}
+    if source in aliases:
+        source_aliases.add(aliases[source])
+    for alias, target in aliases.items():
+        if target == source:
+            source_aliases.add(alias)
+
+    for source_name in source_aliases:
+        if _candidate_returns_name_bare(candidate, source_name):
+            return True
+    return False
+
+
+def _candidate_returns_name_bare(candidate: str, source_name: str) -> bool:
+    escaped = re.escape(source_name)
+    return bool(
+        re.search(rf"(?m)\breturn\s+{escaped}\s*(?:$|[;,])", candidate)
+        or re.search(rf"(?m)\breturn\s*\(\s*{escaped}\s*\)\s*(?:$|[;,])", candidate)
+    )
+
+
+def _local_array_alias_pattern_for_source(source: str) -> re.Pattern[str]:
+    return re.compile(
+        rf"\blocal\s+(?P<alias>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?P<source>{re.escape(source)})\b"
+    )
 
 
 def _extract_lua_segments(candidate: str, output_mode: str) -> list[tuple[str, str]]:

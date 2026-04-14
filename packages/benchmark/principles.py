@@ -5,7 +5,7 @@ import re
 from typing import Any
 
 from packages.orchestrator.domain_adapter import build_domain_prompt_package
-from packages.validators.core import run_validation_pipeline
+from packages.validators.core import has_in_place_array_field_enrichment, run_validation_pipeline
 
 _KEY_LITERAL_PATTERN = re.compile(r"""(?:\b(?:key|k)\s*~=\s*|\[\s*)["']([^"']+)["']""")
 _NUMERIC_OPERAND = r"(?:\([^()\n]+\)|#[A-Za-z_][A-Za-z0-9_\.]*(?:\[[^\]\n]+\])?|\b[A-Za-z_][A-Za-z0-9_\.]*(?:\[[^\]\n]+\])?|\d+(?:\.\d+)?)"
@@ -95,7 +95,8 @@ def _evaluate_case_specific_checks(case: dict[str, Any], candidate: str) -> list
         checks.append(
             _boolean_check(
                 "array_result_allocation",
-                "_utils.array.new()" in candidate and "table.insert" in candidate,
+                ("_utils.array.new()" in candidate and "table.insert" in candidate)
+                or has_in_place_array_field_enrichment(candidate),
                 "Filtering tasks must allocate a result array and append matching items.",
             )
         )

@@ -2,6 +2,7 @@ import sys
 from pathlib import Path
 
 from adapters.model import OllamaModelAdapter
+from runtime_policy import RELEASE_MODE, RuntimeOptions, normalize_mode
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(_REPO_ROOT) not in sys.path:
@@ -9,6 +10,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 from packages.orchestrator.domain_adapter import build_domain_prompt_package  # noqa: E402
 from packages.orchestrator.repair_loop import run_quality_loop  # noqa: E402
+from packages.shared.language import DEFAULT_LANGUAGE  # noqa: E402
 
 
 class GenerationService:
@@ -25,8 +27,20 @@ class GenerationService:
         input_roots: list[str] | None = None,
         risk_tags: list[str] | None = None,
         debug: bool = False,
+        mode: str = RELEASE_MODE,
+        model: str | None = None,
+        runtime_options: dict[str, int] | RuntimeOptions | None = None,
+        allow_cloud_model: bool = False,
+        language: str = DEFAULT_LANGUAGE,
     ) -> dict[str, object]:
+        model_adapter = self._adapter_for_request(
+            mode=mode,
+            model=model,
+            runtime_options=runtime_options,
+            allow_cloud_model=allow_cloud_model,
+        )
         if archetype and output_mode:
+            agent_runner = getattr(model_adapter, "generate_from_agent", None)
             prompt_package = build_domain_prompt_package(
                 task_text,
                 provided_context,
@@ -34,15 +48,17 @@ class GenerationService:
                 output_mode=output_mode,
                 input_roots=input_roots,
                 risk_tags=risk_tags,
+                language=language,
+                agent_runner=agent_runner if callable(agent_runner) else None,
             )
-            return run_quality_loop(self._model_adapter, prompt_package, debug=debug).to_dict()
+            return run_quality_loop(model_adapter, prompt_package, debug=debug).to_dict()
 
         if debug:
             prompt_parts = [task_text]
             if provided_context:
                 prompt_parts.append(provided_context)
             prompt = "\n\n".join(prompt_parts)
-            code = self._model_adapter.generate_from_prompt(prompt)
+            code = model_adapter.generate_from_prompt(prompt)
             debug_payload: dict[str, object] | None = {
                 "prompt_package": None,
                 "model_calls": [
@@ -55,11 +71,12 @@ class GenerationService:
                 "validation_passes": [],
             }
         else:
-            code = self._model_adapter.generate(task_text, provided_context)
+            code = model_adapter.generate(task_text, provided_context)
             debug_payload = None
         return {
             "code": code,
             "validation_status": "not_run",
+            "stop_reason": "not_run",
             "trace": ["request_received", "model_invoked", "response_ready"],
             "validator_report": None,
             "critic_report": None,
@@ -69,3 +86,28 @@ class GenerationService:
             "archetype": None,
             "debug": debug_payload,
         }
+
+    def _adapter_for_request(
+        self,
+        *,
+        mode: str,
+        model: str | None,
+        runtime_options: dict[str, int] | RuntimeOptions | None,
+        allow_cloud_model: bool,
+    ) -> OllamaModelAdapter:
+        normalized_mode = normalize_mode(mode)
+        if (
+            normalized_mode == RELEASE_MODE
+            and model is None
+            and runtime_options is None
+            and not allow_cloud_model
+        ):
+            return self._model_adapter
+
+        options = runtime_options if isinstance(runtime_options, RuntimeOptions) else RuntimeOptions.from_mapping(runtime_options)
+        return self._model_adapter.with_overrides(
+            model=model,
+            runtime_options=options,
+            mode=normalized_mode,
+            allow_cloud_model=allow_cloud_model,
+        )

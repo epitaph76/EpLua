@@ -35,4 +35,6 @@ RUN pip install --no-cache-dir --upgrade pip \
 
 COPY . /app
 
+RUN pip install --no-cache-dir -e /app/apps/api
+
 WORKDIR /app/apps/api

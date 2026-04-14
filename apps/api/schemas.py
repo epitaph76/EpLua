@@ -1,4 +1,12 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field
+
+
+class RuntimeOptionsRequest(BaseModel):
+    num_ctx: int = Field(gt=0)
+    num_predict: int = Field(gt=0)
+    batch: int = Field(gt=0)
 
 
 class GenerateRequest(BaseModel):
@@ -9,11 +17,17 @@ class GenerateRequest(BaseModel):
     input_roots: list[str] | None = None
     risk_tags: list[str] | None = None
     debug: bool = False
+    mode: str = "release"
+    model: str | None = None
+    runtime_options: RuntimeOptionsRequest | None = None
+    allow_cloud_model: bool = False
+    language: Literal["ru", "en"] = "ru"
 
 
 class GenerateResponse(BaseModel):
     code: str
     validation_status: str
+    stop_reason: str
     trace: list[str]
     validator_report: dict[str, object] | None = None
     critic_report: dict[str, object] | None = None

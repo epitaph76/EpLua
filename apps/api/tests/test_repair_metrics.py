@@ -102,7 +102,6 @@ def _build_scripted_responses(
         if pack_case["case_id"] == "case-01-last-array-item":
             scripted_responses[pack_case["case_id"]] = [
                 f"```lua\n{valid_candidate}\n```",
-                valid_candidate,
                 _SEMANTIC_PASS_RESPONSE,
             ]
             continue
