@@ -84,14 +84,6 @@ def build_prompt_package_for_generation(
     if intent_hints:
         system_sections.extend(["Intent hints:", _format_list(intent_hints)])
 
-    output_contract_hints = _output_contract_hints(effective_output_mode)
-    if output_contract_hints:
-        system_sections.extend(["Output contract hard rules:", _format_list(output_contract_hints)])
-
-    operation_hints = _operation_hints(planner_result.task_spec)
-    if operation_hints:
-        system_sections.extend(["Operation hard rules:", _format_list(operation_hints)])
-
     if risk_tags:
         risk_hints = [
             templates["risk_hints"][risk_tag]
@@ -408,40 +400,6 @@ def _format_task_spec(task_spec: TaskSpec) -> str:
     return "\n".join(lines)
 
 
-def _output_contract_hints(output_mode: str) -> list[str]:
-    if output_mode == "raw_lua":
-        return [
-            "Do not wrap raw_lua output in markdown fences; the first response token must be Lua code.",
-            "Return no explanation before or after the Lua fragment.",
-        ]
-    if output_mode in {"json_wrapper", "patch_mode"}:
-        return [
-            "Do not wrap JSON output in markdown fences; the first response token must be {.",
-            "Return no explanation before or after the JSON object.",
-        ]
-    return []
-
-
-def _operation_hints(task_spec: TaskSpec) -> list[str]:
-    if task_spec.operation == "last_array_item":
-        root = task_spec.input_roots[0] if task_spec.input_roots else "the selected array root"
-        return [
-            "Return the selected array item, not the array/table itself.",
-            "For last_array_item, use the last Lua array element at values[#values].",
-            f"Safe pattern: local values = {root}; if type(values) == \"table\" and #values > 0 then return values[#values] end; return nil.",
-        ]
-    if task_spec.operation == "first_array_item":
-        root = task_spec.input_roots[0] if task_spec.input_roots else "the selected array root"
-        return [
-            "Return the selected array item, not the array/table itself.",
-            "For first_array_item, use the first Lua array element at values[1].",
-            f"Safe pattern: local values = {root}; if type(values) == \"table\" and #values > 0 then return values[1] end; return nil.",
-        ]
-    if task_spec.expected_shape == "scalar_or_nil":
-        return ["Return a scalar value or nil, not a wrapper table, unless the task explicitly asks for a table."]
-    return []
-
-
 def _intent_hints(task_intents: tuple[str, ...]) -> list[str]:
     hints: list[str] = []
     if "clear_target_fields" in task_intents:
@@ -455,3 +413,4 @@ def _intent_hints(task_intents: tuple[str, ...]) -> list[str]:
     if "mutate_in_place" in task_intents:
         hints.append("Prefer in-place mutation only when the task wording explicitly asks to update the existing structure.")
     return hints
+
