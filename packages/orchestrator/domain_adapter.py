@@ -27,6 +27,7 @@ JSON_WRAPPER = "json_wrapper"
 PATCH_MODE = "patch_mode"
 CLARIFICATION = "clarification"
 _VALID_OUTPUT_MODES = {RAW_LUA, JSON_WRAPPER, PATCH_MODE, CLARIFICATION}
+_DEFAULT_PLANNER_ARCHETYPE = "transformation"
 _CODE_FENCE_PATTERN = re.compile(r"```(?:lua|json)?\s*(.*?)```", re.DOTALL)
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _ARCHETYPE_REGISTRY_PATH = _REPO_ROOT / "packages" / "task-archetypes" / "registry.json"
@@ -57,8 +58,8 @@ def build_domain_prompt_package(
     task_text: str,
     provided_context: str | None,
     *,
-    archetype: str,
-    output_mode: str,
+    archetype: str | None = None,
+    output_mode: str | None = None,
     input_roots: list[str] | None = None,
     risk_tags: list[str] | None = None,
     language: str = DEFAULT_LANGUAGE,
@@ -66,15 +67,24 @@ def build_domain_prompt_package(
 ) -> DomainPromptPackage:
     archetypes = _load_json(_ARCHETYPE_REGISTRY_PATH)
     templates = _load_json(_TEMPLATE_PACK_PATH)
+    explicit_archetype = archetype is not None
+    explicit_output_mode = output_mode is not None
+    fallback_archetype = archetype or _DEFAULT_PLANNER_ARCHETYPE
+    fallback_output_mode = output_mode or RAW_LUA
 
-    if archetype not in archetypes:
-        raise ValueError(f"Unknown task archetype: {archetype}")
-    if output_mode not in _VALID_OUTPUT_MODES:
-        raise ValueError(f"Unknown output mode: {output_mode}")
+    if fallback_archetype not in archetypes:
+        raise ValueError(f"Unknown task archetype: {fallback_archetype}")
+    if fallback_output_mode not in _VALID_OUTPUT_MODES:
+        raise ValueError(f"Unknown output mode: {fallback_output_mode}")
 
-    archetype_config = archetypes[archetype]
-    if output_mode != CLARIFICATION and output_mode not in archetype_config["allowed_output_modes"]:
-        raise ValueError(f"Output mode {output_mode} is not allowed for archetype {archetype}.")
+    fallback_archetype_config = archetypes[fallback_archetype]
+    if (
+        explicit_archetype
+        and explicit_output_mode
+        and fallback_output_mode != CLARIFICATION
+        and fallback_output_mode not in fallback_archetype_config["allowed_output_modes"]
+    ):
+        raise ValueError(f"Output mode {fallback_output_mode} is not allowed for archetype {fallback_archetype}.")
 
     risk_tags = tuple(risk_tags or ())
     agent_layer_calls: list[dict[str, object]] = []
@@ -82,10 +92,12 @@ def build_domain_prompt_package(
         task_text,
         provided_context,
         language=language,
-        archetype=archetype,
-        output_mode=output_mode,
+        archetype=fallback_archetype,
+        output_mode=fallback_output_mode,
         input_roots=input_roots,
         risk_tags=risk_tags,
+        explicit_archetype=explicit_archetype,
+        explicit_output_mode=explicit_output_mode,
     )
     if agent_runner is not None:
         planner_agent_prompt = build_planner_agent_prompt(
@@ -94,7 +106,11 @@ def build_domain_prompt_package(
             fallback_result=planner_result,
         )
         planner_raw_response = agent_runner(planner_agent_prompt)
-        planner_result = apply_planner_agent_response(planner_raw_response, planner_result)
+        planner_result = apply_planner_agent_response(
+            planner_raw_response,
+            planner_result,
+            allowed_archetypes=tuple(archetypes.keys()),
+        )
         agent_layer_calls.append(
             {
                 "phase": "planner",
@@ -105,7 +121,10 @@ def build_domain_prompt_package(
                 "planner_result": planner_result.to_debug_dict(),
             }
         )
+    effective_archetype = planner_result.task_spec.archetype
     effective_output_mode = planner_result.task_spec.output_mode
+    effective_risk_tags = planner_result.task_spec.risk_tags
+    archetype_config = archetypes[effective_archetype]
 
     output_mode_rules = templates["output_modes"][effective_output_mode]
     common_rules = templates["common_rules"]
@@ -113,13 +132,13 @@ def build_domain_prompt_package(
     prompt_builder_result = build_prompt_package_for_generation(
         task_text=task_text,
         provided_context=provided_context,
-        archetype=archetype,
+        archetype=effective_archetype,
         archetype_config=archetype_config,
         effective_output_mode=effective_output_mode,
         output_mode_rules=output_mode_rules,
         common_rules=common_rules,
         forbidden_patterns=forbidden_patterns,
-        risk_tags=risk_tags,
+        risk_tags=effective_risk_tags,
         planner_result=planner_result,
         templates=templates,
     )
@@ -146,12 +165,12 @@ def build_domain_prompt_package(
     return DomainPromptPackage(
         prompt=prompt_builder_result.agent_prompt.to_legacy_prompt(),
         agent_prompt=prompt_builder_result.agent_prompt,
-        archetype=archetype,
+        archetype=effective_archetype,
         output_mode=effective_output_mode,
         expected_result_format=prompt_builder_result.expected_result_format,
         allowed_data_roots=planner_result.input_roots,
         forbidden_patterns=prompt_builder_result.forbidden_patterns,
-        risk_tags=risk_tags,
+        risk_tags=effective_risk_tags,
         task_intents=planner_result.task_intents,
         clarification_required=planner_result.clarification_required,
         task_spec=planner_result.task_spec,

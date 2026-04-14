@@ -8,6 +8,7 @@ import pytest
 from adapters import model as model_module
 from adapters.model import OllamaModelAdapter
 from errors import ApiError
+from runtime_policy import RuntimeOptions
 
 
 class FakeResponse:
@@ -54,6 +55,39 @@ class RecordingHttpClient:
                 chat=True,
             )
         return ConfigurableResponse(self._response_text)
+
+
+class PayloadResponse:
+    def __init__(self, payload: dict[str, object]) -> None:
+        self._payload = payload
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict[str, object]:
+        return self._payload
+
+
+class SequencedPayloadHttpClient:
+    def __init__(self, payloads: list[dict[str, object]]) -> None:
+        self.calls: list[dict[str, object]] = []
+        self._payloads = payloads
+
+    def post(self, url: str, json: dict[str, object], timeout: float) -> PayloadResponse:
+        self.calls.append({"url": url, "json": json, "timeout": timeout})
+        return PayloadResponse(self._payloads.pop(0))
+
+
+class EmptyAgentChatFallbackHttpClient:
+    def __init__(self, generate_response_text: str) -> None:
+        self.calls: list[dict[str, object]] = []
+        self._generate_response_text = generate_response_text
+
+    def post(self, url: str, json: dict[str, object], timeout: float) -> PayloadResponse:
+        self.calls.append({"url": url, "json": json, "timeout": timeout})
+        if url.endswith("/api/chat"):
+            return PayloadResponse({"message": {"role": "assistant", "content": ""}})
+        return PayloadResponse({"response": self._generate_response_text})
 
 
 def _recorded_agent_prompt(http_client: RecordingHttpClient, *, index: int = -1) -> tuple[str, list[dict[str, str]]]:
@@ -332,9 +366,146 @@ def test_ollama_adapter_enforces_raw_lua_mode_prompt_and_normalizes_response(mon
         "http://localhost:11434/api/chat",
     ]
     prompt, _messages = _recorded_agent_prompt(http_client)
+    assert "Task:" in prompt
+    assert "Из полученного списка email получи последний." in prompt
+    assert "Provided context:" in prompt
+    assert '{"wf":{"vars":{"emails":["user1@example.com","user2@example.com"]}}}' in prompt
     assert "Output mode: raw_lua" in prompt
     assert "Return only Lua code." in prompt
     assert "Allowed data roots: wf.vars.emails" in prompt
+
+
+def test_ollama_adapter_retries_planner_when_agent_output_hits_num_predict_budget(monkeypatch) -> None:
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "qwen2.5-coder:3b")
+
+    http_client = SequencedPayloadHttpClient(
+        [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": (
+                        '{"arch":"simple_extraction","op":"last_array_item","mode":"raw_lua",'
+                        '"roots":["wf.vars.emails"],"shape":"scalar_or_nil","risks":["array_indexing"],"edges":["single_item","empty_array"],"clar'
+                    ),
+                },
+                "eval_count": 256,
+            },
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": (
+                        '{"arch":"simple_extraction","op":"last_array_item","mode":"raw_lua",'
+                        '"roots":["wf.vars.emails"],"shape":"scalar_or_nil","risks":["array_indexing","empty_array"],'
+                        '"edges":["single_item","empty_array"],"clar":false,"q":null,"intents":[]}'
+                    ),
+                },
+                "eval_count": 96,
+            },
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": '{"sys":["Return the last item only."],"user":["Use wf.vars.emails[#wf.vars.emails]."]}',
+                },
+                "eval_count": 48,
+            },
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": "return wf.vars.emails[#wf.vars.emails]",
+                },
+                "eval_count": 24,
+            },
+        ]
+    )
+    adapter = OllamaModelAdapter(
+        http_client=http_client,
+        runtime_options=RuntimeOptions(num_ctx=4096, num_predict=256, batch=1),
+    )
+
+    code = adapter.generate(
+        "Из полученного списка email получи последний.",
+        '{"wf":{"vars":{"emails":["user1@example.com","user2@example.com"]}}}',
+        archetype="simple_extraction",
+        output_mode="raw_lua",
+        input_roots=["wf.vars.emails"],
+        risk_tags=["array_indexing", "empty_array"],
+    )
+
+    assert code == "return wf.vars.emails[#wf.vars.emails]"
+    assert [call["url"] for call in http_client.calls] == [
+        "http://localhost:11434/api/chat",
+        "http://localhost:11434/api/chat",
+        "http://localhost:11434/api/chat",
+        "http://localhost:11434/api/chat",
+    ]
+    retry_messages = http_client.calls[1]["json"]["messages"]
+    assert isinstance(retry_messages, list)
+    assert any("truncated by the token budget" in str(message["content"]) for message in retry_messages)
+
+
+def test_ollama_adapter_retries_agentic_generate_prompt_when_output_hits_num_predict_budget(monkeypatch) -> None:
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "qwen2.5-coder:3b")
+
+    http_client = SequencedPayloadHttpClient(
+        [
+            {
+                "response": (
+                    '{"arch":"simple_extraction","op":"last_array_item","mode":"raw_lua",'
+                    '"roots":["wf.vars.emails"],"shape":"scalar_or_nil","risks":["array_indexing"],"edges":["single_item","empty_array"],"clar'
+                ),
+                "eval_count": 256,
+            },
+            {
+                "response": (
+                    '{"arch":"simple_extraction","op":"last_array_item","mode":"raw_lua",'
+                    '"roots":["wf.vars.emails"],"shape":"scalar_or_nil","risks":["array_indexing","empty_array"],'
+                    '"edges":["single_item","empty_array"],"clar":false,"q":null,"intents":[]}'
+                ),
+                "eval_count": 96,
+            },
+        ]
+    )
+    adapter = OllamaModelAdapter(
+        http_client=http_client,
+        runtime_options=RuntimeOptions(num_ctx=4096, num_predict=256, batch=1),
+    )
+
+    response = adapter.generate_from_prompt(
+        "SYSTEM:\nYou are the planner agent for the luaMTS validation pipeline.\n\nUSER:\nTask:"
+    )
+
+    assert response.endswith('"intents":[]}')
+    assert len(http_client.calls) == 2
+    assert "truncated by the token budget" in str(http_client.calls[1]["json"]["prompt"])
+
+
+def test_ollama_adapter_falls_back_to_legacy_prompt_when_agent_chat_content_is_empty(monkeypatch) -> None:
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "qwen2.5-coder:3b")
+
+    http_client = EmptyAgentChatFallbackHttpClient(
+        '{"op":"last_array_item","mode":"raw_lua","roots":["wf.vars.emails"],"shape":"scalar_or_nil","risks":["array_indexing","empty_array"],"edges":["single_item","empty_array"],"clar":false,"q":null,"intents":[]}'
+    )
+    adapter = OllamaModelAdapter(http_client=http_client)
+    agent_prompt = model_module.AgentPrompt(
+        agent_name="planner",
+        messages=(
+            model_module.AgentMessage(role="system", content="You are the planner agent for the luaMTS validation pipeline."),
+            model_module.AgentMessage(role="user", content="Task:\nИз полученного списка email получи последний."),
+        ),
+    )
+
+    response = adapter.generate_from_agent(agent_prompt)
+
+    assert response.startswith('{"op":"last_array_item"')
+    assert [call["url"] for call in http_client.calls] == [
+        "http://localhost:11434/api/chat",
+        "http://localhost:11434/api/generate",
+    ]
+    assert "SYSTEM:" in str(http_client.calls[1]["json"]["prompt"])
+    assert "planner agent for the luaMTS validation pipeline" in str(http_client.calls[1]["json"]["prompt"])
 
 
 def test_ollama_adapter_switches_to_clarification_when_data_roots_are_ambiguous(monkeypatch) -> None:

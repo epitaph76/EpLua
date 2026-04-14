@@ -224,3 +224,50 @@ def test_validate_principles_rejects_last_array_item_returning_array_alias() -> 
     )
 
     assert correct_report.status == "pass"
+
+
+def test_array_item_validators_follow_operation_when_planner_keeps_transformation_archetype() -> None:
+    task_spec = TaskSpec(
+        task_text="Из полученного списка email получи последний.",
+        language="ru",
+        archetype="transformation",
+        operation="last_array_item",
+        output_mode=core.RAW_LUA,
+        input_roots=("wf.vars.emails",),
+        expected_shape="scalar_or_nil",
+        risk_tags=("array_indexing",),
+        edge_cases=("single_item", "empty_array"),
+        clarification_required=False,
+        clarification_question=None,
+    )
+    candidate = 'local emails = wf.vars.emails\nif emails and #emails > 0 then\n    return emails\nend\nreturn nil'
+    execution_context = {
+        "wf": {
+            "vars": {
+                "emails": [
+                    "user1@example.com",
+                    "user2@example.com",
+                    "user3@example.com",
+                ]
+            }
+        }
+    }
+
+    principle_report = core.validate_principles(
+        candidate,
+        output_mode=core.RAW_LUA,
+        risk_tags=("array_indexing",),
+        archetype="transformation",
+        task_spec=task_spec,
+    )
+    runtime_report = core.validate_runtime_behavior(
+        candidate,
+        output_mode=core.RAW_LUA,
+        execution_context=execution_context,
+        task_spec=task_spec,
+    )
+
+    assert principle_report.status == "fail"
+    assert principle_report.findings[0].failure_class == "array_item_returns_whole_array"
+    assert runtime_report.status == "fail"
+    assert runtime_report.findings[0].failure_class == "runtime_behavior_mismatch"

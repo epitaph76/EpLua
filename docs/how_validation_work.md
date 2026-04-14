@@ -69,42 +69,6 @@ Deterministic planner fallback должен оставаться только с
 
 ## How Validation Works Now
 
-Сейчас система работает гибридно: часть семантических решений действительно принимает LLM planner, но часть значимых полей уже заранее заполняется до planner.
-
-### Что сейчас делает chat CLI до backend
-
-В `apps/api/cli/main.py` chat path сейчас:
-
-- режет строку на `task_text` и `inline_context`;
-- выводит `input_roots` через `_effective_input_roots(...)`;
-- сужает context через `_narrow_json_context(...)`;
-- добавляет `risk_tags` через `_infer_risk_tags(...)`;
-- выбирает `archetype` через `_infer_chat_archetype(...)`;
-- жёстко ставит `output_mode="raw_lua"`.
-
-Это означает, что planner получает уже частично предразмеченную задачу.
-
-### Что сейчас делает planner
-
-Planner в `packages/orchestrator/planner.py` получает:
-
-- `task_text`;
-- `provided_context`;
-- `language`;
-- уже выбранный `archetype`;
-- уже выбранный `output_mode`;
-- `input_roots`;
-- `risk_tags`.
-
-Deterministic planner при этом пока mostly structural:
-
-- нормализует язык;
-- нормализует roots;
-- парсит `execution_context`;
-- создаёт стартовый `TaskSpec` с `operation="unresolved"` и `expected_shape="unknown"`.
-
-Потом planner agent может дообогатить этот skeleton, но он уже работает не с полностью raw input, а с partially pre-classified request.
-
 ### Что сейчас особенно важно помнить
 
 Current implementation уже умеет много полезного:
@@ -116,248 +80,82 @@ Current implementation уже умеет много полезного:
 - oscillation detection;
 - deterministic repair tools.
 
-Но при этом текущий chat entry path всё ещё содержит архитектурный debt: часть semantic classification происходит раньше planner.
+Старые проблемы `1`-`7` про CLI / planner / prompter / truncation guard убраны из этого документа, потому что они уже закрыты в текущей рабочей ветке по словам владельца задачи.
 
 ## Current Problems And What Must Be Fixed
 
 Ниже перечислены не просто наблюдения, а **конкретные проблемные места**, которые стоит считать кандидатами на исправление.
 
-### Problem 1. Chat CLI слишком рано выбирает `archetype`
-
-Файл:
-
-- `apps/api/cli/main.py`
-
-Проблемное место:
-
-- `_infer_chat_archetype(...)`
-
-Почему это плохо:
-
-- это semantic classification;
-- оно делается эвристикой по ключевым словам;
-- planner получает уже навязанный `archetype`;
-- из-за этого planner перестаёт быть единственным владельцем semantic routing.
-
-Что нужно исправить:
-
-- убрать автоматическое назначение `archetype` из chat CLI;
-- либо оставить его только как `planner_hint`, а не как final field;
-- финальный `archetype` должен выставлять planner.
-
-### Problem 2. Chat CLI жёстко ставит `output_mode="raw_lua"`
-
-Файл:
-
-- `apps/api/cli/main.py`
-
-Проблемное место:
-
-- при сборке `task_args` в chat path `output_mode` задаётся жёстко как `raw_lua`.
-
-Почему это плохо:
-
-- mode-selection превращается в transport-level константу;
-- planner не может полноценно решать, нужен ли другой mode;
-- система искусственно зажата в один response shape ещё до semantic planning.
-
-Что нужно исправить:
-
-- перестать жёстко ставить `output_mode` в chat path;
-- либо передавать его только как optional hint/default;
-- final mode должен определяться planner/mode-selection logic, если пользователь явно не задал его сам.
-
-### Problem 3. `risk_tags` сейчас частично выводятся тупой локальной эвристикой
-
-Файл:
-
-- `apps/api/cli/main.py`
-
-Проблемное место:
-
-- `_infer_risk_tags(...)`
-
-Current behavior:
-
-- если есть `input_roots` и в `task_text` встречается `послед`, `перв`, `last` или `first`,
-- CLI автоматически добавляет:
-  - `array_indexing`
-  - `empty_array`
-
-Почему это плохо:
-
-- это не полноценное semantic understanding;
-- это brittle keyword heuristic;
-- risk tags могут влиять на planner hints, prompt building и runtime backstop;
-- часть reasoning оказывается в CLI вместо planner.
-
-Что нужно исправить:
-
-- semantic `risk_tags` должны определяться planner;
-- если какие-то risk tags нужны как deterministic hints, их надо явно разделить на:
-  - `transport_hints`
-  - `planner_output`
-- текущую эвристику нельзя считать финальным источником truth.
-
-### Problem 4. Quality loop зависит от того, что `archetype` и `output_mode` уже заполнены заранее
-
-Файл:
-
-- `apps/api/services/generation.py`
-
-Проблемное место:
-
-- `GenerationService.generate(...)` запускает `build_domain_prompt_package(...)` и `run_quality_loop(...)` только если уже есть и `archetype`, и `output_mode`.
-
-Почему это плохо:
-
-- planner-first architecture получается неполной;
-- без заранее заполненных полей система не входит в полноценный domain-adapted path;
-- часть product path вынужденно переносит semantic decisions вверх, в CLI.
-
-Что нужно исправить:
-
-- сделать planner-first вход в quality loop;
-- разрешить backend самому определять `archetype` и `output_mode`, если пользователь их явно не указал;
-- сохранить explicit override только для случая, когда пользователь или тест сознательно фиксирует эти поля.
-
-### Problem 5. `input_roots` не так токсичны, как `archetype` и `risk_tags`, но их роль надо прояснить
-
-Файлы:
-
-- `apps/api/cli/main.py`
-- `packages/orchestrator/planner.py`
-
-Важно не перепутать:
-
-- deterministic extraction of roots из JSON context сама по себе нормальна;
-- это ближе к structural parsing, чем к semantic reasoning.
-
-Но здесь тоже нужен аккуратный контракт:
-
-- если roots определены пользователем явно, это source of truth;
-- если roots только эвристически выведены из context, planner должен видеть это как inferred evidence, а не как unquestionable final truth.
-
-Что нужно исправить:
-
-- развести понятия:
-  - `explicit_input_roots`
-- `inferred_input_roots`
-- planner должен понимать, какие roots пользователь задал явно, а какие были только выведены автоматически.
-
-### Problem 6. Generator prompt нельзя "оптимизировать" за счёт потери user task и релевантного context
+### Remaining Problem. Pre-validation cleanup после generator нужно пересмотреть
 
 Слой:
 
-- `generation`
+- boundary между `generator` и validator pipeline
 
-Связанные файлы:
+Связанный файл:
 
-- `packages/orchestrator/prompter.py`
-- `packages/orchestrator/domain_adapter.py`
+- `packages/orchestrator/repair_loop.py`
 
-Проблема:
+Проблемное место:
 
-- при обсуждении сокращения prompt нельзя скатиться в ложную оптимизацию, где из generator prompt убираются:
-  - raw user task;
-  - релевантный context;
-  - явное expected behavior.
+- `_prepare_candidate_for_validation(...)`
 
-Почему это важно:
+Current behavior:
 
-- user prompt несёт фактическую постановку задачи;
-- context несёт данные и структуру, по которым generator должен строить код;
-- слишком агрессивное "сжатие" prompt может сделать его короче, но одновременно менее понятным и менее управляемым для модели;
-- generation layer должен получать не просто короткий prompt, а **короткий и содержательный prompt**.
+- generator возвращает `raw_candidate`;
+- затем `_prepare_candidate_for_validation(...)` превращает его в:
+  - `candidate`;
+  - `response_parts`;
+- cleanup вырезает `<think>...</think>`, leading/trailing control tokens и auxiliary text;
+- дальше validator pipeline получает уже не raw model output, а `visible_response`.
 
-Что должно быть реализовано:
+Почему это стоит пересмотреть:
 
-- generator prompt должен сохранять:
-  - raw `task_text` пользователя;
-  - релевантный `provided_context` или его корректно narrowed version;
-  - явное expected behavior;
-  - allowed roots;
-  - output mode contract;
-  - короткие anti-pattern instructions.
-- сокращать нужно:
-  - лишние policy blocks;
-  - дублирующие секции;
-  - служебные описания, не помогающие генерации;
-  - внутреннюю сериализацию состояния, которую generator не обязан "понимать" как протокол.
+- такой cleanup может скрывать реальное нарушение output contract;
+- generator должен уметь возвращать валидный candidate сам, а не рассчитывать на "починку" между generation и validation;
+- если model output содержит лишние control tokens, prose, think blocks или service text, это может быть validator finding, а не silent cleanup;
+- текущий слой смешивает audit/debug extraction и semantic preparation candidate'а к validation.
 
-Практический принцип:
+Что нужно попробовать:
 
-- не "самый короткий prompt любой ценой";
-- а "минимальный prompt, который остаётся однозначным для generator".
+- убрать этот cleanup из основного happy path или сделать его намного более явным;
+- передавать raw generator output напрямую в format validator, чтобы format layer видел фактический model output;
+- оставить extraction of `response_parts` только для debug/audit, но не менять candidate молча;
+- если cleanup всё-таки нужен, оформить его как отдельный `pre_validation_cleanup` stage с:
+  - trace entry;
+  - structured report;
+  - статусом `pass / changed / fail`;
+  - явным finding, если cleanup изменил model output.
 
-### Problem 7. На каждом agentic слое нужен guard на обрезанный output по лимиту `num_predict`
+Целевой принцип:
 
-Слои:
-
-- `planner`
-- `prompter`
-- `semantic_critic`
-- другие agentic sub-steps, если они добавятся
-
-Связанные файлы:
-
-- `apps/api/adapters/model.py`
-- `packages/orchestrator/planner.py`
-- `packages/orchestrator/prompter.py`
-- `packages/orchestrator/critic.py`
-
-Проблема:
-
-- если agentic layer вернул ответ ровно в лимит `num_predict` (например, ровно `256` токенов),
-- это сильный сигнал, что ответ мог быть обрезан по budget limit, а не завершён естественным образом;
-- сейчас такой случай не выделен как отдельный protocol-level quality gate.
-
-Почему это важно:
-
-- truncated planner output может ломать `TaskSpec`;
-- truncated prompter output может давать неполный patch prompt;
-- truncated semantic critic output может притворяться валидным reasoning, хотя по факту ответ был насильно оборван;
-- без явного guard'а pipeline может продолжить работу на частично повреждённых фактах.
-
-Что должно быть реализовано:
-
-- у каждого agentic слоя должна быть post-check валидация ответа;
-- если ответ упёрся ровно в `num_predict`, слой должен считать это подозрением на truncation;
-- такой ответ не должен молча считаться нормальным успехом;
-- слой должен:
-  - либо сделать bounded retry;
-  - либо повторить вызов с явной инструкцией "output was too long, compress and return only the minimal valid schema";
-  - либо перейти в fallback/clarification path, если повтор тоже неуспешен.
-
-Минимальная практическая политика:
-
-- exact-hit на `num_predict` считать suspicious;
-- повторный вызов делать с более жёстким требованием краткости;
-- для structured outputs дополнительно валидировать:
-  - schema completeness;
-  - отсутствие оборванного JSON;
-  - наличие всех обязательных полей.
+- validator должен проверять то, что модель реально вернула;
+- любые автоматические изменения между generator и validator должны быть прозрачными, трассируемыми и тестируемыми.
 
 ### Рекомендуемое направление рефакторинга
 
-Минимально системное направление такое:
+Краткосрочный план пересборки:
 
-1. CLI передаёт raw task и raw context.
-2. CLI может передавать только:
-   - explicit user overrides;
-   - optional hints;
-   - transport/runtime flags.
-3. Backend planner становится owner для:
-   - `archetype`
-   - `operation`
-   - `expected_shape`
-   - semantic `risk_tags`
-   - `clarification_required`
-   - `output_mode`, если он явно не зафиксирован пользователем.
-4. Generator prompt должен быть коротким, но сохранять raw task и релевантный context.
-5. На agentic слоях должен появиться truncation guard при упоре в `num_predict`.
-6. Quality loop должен уметь стартовать без заранее заполненных `archetype/output_mode`.
-7. Все старые CLI-эвристики, если они вообще сохраняются, должны быть понижены до hints и не притворяться final semantic classification.
+1. Временно упростить рабочий контур до:
+   - `planner`;
+   - `prompter`;
+   - `generator`.
+2. Цель этого шага - руками протестировать, как реально работает связка agentic слоёв без старого validation / repair шума.
+3. На этом этапе не чинить старый validation loop точечно:
+   - не латать `pre-validation cleanup`;
+   - не усложнять `repair_loop`;
+   - не добавлять новые эвристики поверх старых эвристик;
+   - не пытаться одновременно спасти текущие semantic/runtime validators.
+4. После проверки простого `planner -> prompter -> generator` контура строить новый похожий validation pipeline с нуля:
+   - отдельные явные stages;
+   - понятные входы/выходы между stages;
+   - trace/report для каждого stage;
+   - без silent mutation candidate между generator и validator.
+
+Текущий оставшийся фокус:
+
+1. Pre-validation cleanup после generator нужно либо убрать из happy path, либо сделать явным stage с report.
+2. Новый validation pipeline строить только после ручной проверки простого `planner -> prompter -> generator` контура.
 
 ## 1. Что считать source of truth
 

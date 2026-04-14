@@ -234,20 +234,20 @@ def _handle_chat(args: argparse.Namespace) -> int:
 
         task_text, inline_context = _split_inline_json_context(line)
         raw_context = inline_context or _read_context(state.get("context"))
-        input_roots = _effective_input_roots(state, task_text, raw_context)
+        input_roots = _explicit_input_roots(state)
         provided_context = _narrow_json_context(raw_context, input_roots)
         request_state = {
             **state,
             "input_roots": input_roots,
-            "risk_tags": _infer_risk_tags(task_text, input_roots),
+            "risk_tags": None,
         }
         task_args = argparse.Namespace(
             **request_state,
             task=task_text,
             report=None,
             debug_trace=state["mode"] == "debug",
-            archetype=_infer_chat_archetype(task_text),
-            output_mode="raw_lua",
+            archetype=None,
+            output_mode=None,
         )
         try:
             _validate_generate_args(task_args)
@@ -363,7 +363,7 @@ def _apply_chat_command(state: dict[str, Any], line: str, console: Console) -> b
         console.print("Roots: " + (", ".join(values) if values else "auto"))
         return False
     if command == "/plan":
-        console.print("Plan: infer roots -> narrow JSON context -> generate -> validate/repair -> ask for feedback when bounded.")
+        console.print("Plan: respect explicit roots -> narrow JSON context -> generate -> validate/repair -> ask for feedback when bounded.")
         return False
     if command == "/allow-cloud":
         if not values or values[0].lower() not in {"on", "off"}:
@@ -770,12 +770,9 @@ def _split_inline_json_context(line: str) -> tuple[str, str | None]:
     return line, None
 
 
-def _effective_input_roots(state: dict[str, Any], task_text: str, provided_context: str | None) -> list[str] | None:
+def _explicit_input_roots(state: dict[str, Any]) -> list[str] | None:
     explicit_roots = [str(root) for root in state.get("input_roots", []) if str(root).strip()]
-    if explicit_roots:
-        return explicit_roots
-    inferred_roots = _infer_input_roots_from_context(task_text, provided_context)
-    return inferred_roots or None
+    return explicit_roots or None
 
 
 def _infer_input_roots_from_context(task_text: str, provided_context: str | None) -> list[str]:

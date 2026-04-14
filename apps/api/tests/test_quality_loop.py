@@ -72,6 +72,54 @@ class AgenticPromptModelAdapter(ScriptedModelAdapter):
         return self._next_response()
 
 
+class PlannerOwnedMetadataModelAdapter(ScriptedModelAdapter):
+    def generate_from_agent(self, agent_prompt: AgentPrompt) -> str:
+        self.agent_calls.append(
+            {
+                "agent": agent_prompt.agent_name,
+                "messages": agent_prompt.to_messages_payload(),
+                "legacy_prompt": agent_prompt.to_legacy_prompt(),
+            }
+        )
+        if agent_prompt.agent_name == "planner":
+            return json.dumps(
+                {
+                    "archetype": "simple_extraction",
+                    "operation": "last_array_item",
+                    "output_mode": "raw_lua",
+                    "input_roots": ["wf.vars.emails"],
+                    "expected_shape": "scalar_or_nil",
+                    "risk_tags": ["array_indexing", "empty_array"],
+                    "edge_cases": ["single_item", "empty_array"],
+                    "clarification_required": False,
+                    "clarification_question": None,
+                    "task_intents": [],
+                }
+            )
+        if agent_prompt.agent_name == "prompter":
+            return json.dumps(
+                {
+                    "system_message": "TaskSpec\nAGENT PROMPTER SYSTEM",
+                    "user_message": "TaskSpec\nAGENT PROMPTER USER",
+                }
+            )
+        return self._next_response()
+
+
+class EmptyPlannerPrompterModelAdapter(ScriptedModelAdapter):
+    def generate_from_agent(self, agent_prompt: AgentPrompt) -> str:
+        self.agent_calls.append(
+            {
+                "agent": agent_prompt.agent_name,
+                "messages": agent_prompt.to_messages_payload(),
+                "legacy_prompt": agent_prompt.to_legacy_prompt(),
+            }
+        )
+        if agent_prompt.agent_name in {"planner", "prompter"}:
+            return ""
+        return self._next_response()
+
+
 class TruncatedPlannerModelAdapter(ScriptedModelAdapter):
     def generate_from_agent(self, agent_prompt: AgentPrompt) -> str:
         self.agent_calls.append(
@@ -109,6 +157,28 @@ class CompactAgentProtocolModelAdapter(ScriptedModelAdapter):
             )
         if agent_prompt.agent_name == "prompter":
             return '{"sys":["Return the last array item, not the whole array."],"user":["Use wf.vars.emails[#wf.vars.emails]."]}'
+        return self._next_response()
+
+
+class TransformationArrayItemPlannerModelAdapter(ScriptedModelAdapter):
+    def generate_from_agent(self, agent_prompt: AgentPrompt) -> str:
+        self.agent_calls.append(
+            {
+                "agent": agent_prompt.agent_name,
+                "messages": agent_prompt.to_messages_payload(),
+                "legacy_prompt": agent_prompt.to_legacy_prompt(),
+            }
+        )
+        if agent_prompt.agent_name == "planner":
+            return (
+                '{"arch":"transformation","op":"last_array_item","mode":"raw_lua","roots":["wf.vars.emails"],'
+                '"shape":"scalar_or_nil","risks":["array_indexing"],"edges":["single_item","empty_array"],'
+                '"clar":false,"intents":["extract_last_email"]}'
+            )
+        if agent_prompt.agent_name == "prompter":
+            return '{"sys":["Return the last array item."],"user":["Use wf.vars.emails[#wf.vars.emails]."]}'
+        if agent_prompt.agent_name == "semantic_critic":
+            return SEMANTIC_PASS_RESPONSE
         return self._next_response()
 
 
@@ -399,6 +469,58 @@ def test_generation_service_runs_runtime_validation_before_semantic_for_simple_e
     assert [message["role"] for message in model_adapter.agent_calls[0]["messages"]] == ["system", "user"]
 
 
+def test_generation_service_runs_planner_first_without_cli_semantic_overrides() -> None:
+    model_adapter = PlannerOwnedMetadataModelAdapter(
+        [
+            "return wf.vars.emails[#wf.vars.emails]",
+            SEMANTIC_PASS_RESPONSE,
+        ]
+    )
+    service = GenerationService(model_adapter=model_adapter)
+
+    result = service.generate(
+        task_text="Из полученного списка email получи последний.",
+        provided_context=json.dumps(
+            {
+                "wf": {
+                    "vars": {
+                        "emails": [
+                            "user1@example.com",
+                            "user2@example.com",
+                        ]
+                    }
+                }
+            }
+        ),
+        debug=True,
+    )
+
+    assert result["validation_status"] == "passed"
+    assert result["output_mode"] == "raw_lua"
+    assert result["archetype"] == "simple_extraction"
+    assert result["trace"] == [
+        "request_received",
+        "generation",
+        "format_validation",
+        "rule_validation",
+        "runtime_validation",
+        "semantic_validation",
+        "finalize",
+    ]
+    debug = result["debug"]
+    assert debug is not None
+    assert debug["prompt_package"]["archetype"] == "simple_extraction"
+    assert debug["prompt_package"]["output_mode"] == "raw_lua"
+    assert debug["prompt_package"]["risk_tags"] == ["array_indexing", "empty_array"]
+    assert debug["prompt_package"]["planner_result"]["task_spec"]["archetype"] == "simple_extraction"
+    assert [call["agent"] for call in model_adapter.agent_calls] == [
+        "planner",
+        "prompter",
+        "generator",
+        "semantic_critic",
+    ]
+
+
 def test_generation_service_runtime_blocks_wrong_candidate_after_truncated_planner_json() -> None:
     model_adapter = TruncatedPlannerModelAdapter(
         [
@@ -440,6 +562,86 @@ def test_generation_service_runtime_blocks_wrong_candidate_after_truncated_plann
     assert debug["validation_passes"][0]["semantic_report"]["status"] == "skipped"
     assert debug["validation_passes"][1]["runtime_report"]["status"] == "pass"
     assert debug["validation_passes"][1]["semantic_report"]["status"] == "pass"
+
+
+def test_generation_service_repair_loop_blocks_whole_array_when_planner_falls_back_to_unresolved() -> None:
+    model_adapter = EmptyPlannerPrompterModelAdapter(
+        [
+            "",
+            "local emails = wf.vars.emails or {}\nlocal last_email = nil\nif #emails > 0 then\n  last_email = emails\nend\nreturn last_email",
+            "return wf.vars.emails[#wf.vars.emails]",
+            SEMANTIC_PASS_RESPONSE,
+        ]
+    )
+    service = GenerationService(model_adapter=model_adapter)
+
+    result = service.generate(
+        task_text="Из полученного списка email получи последний.",
+        provided_context=json.dumps(
+            {
+                "wf": {
+                    "vars": {
+                        "emails": [
+                            "user1@example.com",
+                            "user2@example.com",
+                            "user3@example.com",
+                        ]
+                    }
+                }
+            }
+        ),
+        debug=True,
+    )
+
+    assert result["validation_status"] == "repaired"
+    assert result["code"] == "return wf.vars.emails[#wf.vars.emails]"
+    debug = result["debug"]
+    assert debug is not None
+    assert debug["prompt_package"]["planner_result"]["source"] == "deterministic_fallback"
+    assert debug["validation_passes"][1]["runtime_report"]["status"] == "fail"
+    assert debug["validation_passes"][1]["runtime_report"]["findings"][0]["failure_class"] == "runtime_behavior_mismatch"
+    assert debug["validation_passes"][1]["semantic_report"]["status"] == "skipped"
+    assert debug["validation_passes"][2]["runtime_report"]["status"] == "pass"
+    assert debug["validation_passes"][2]["validation_bundle"]["task_spec"]["archetype"] == "simple_extraction"
+    assert debug["validation_passes"][2]["validation_bundle"]["task_spec"]["operation"] == "last_array_item"
+
+
+def test_generation_service_runtime_validates_array_item_operation_with_transformation_archetype() -> None:
+    model_adapter = TransformationArrayItemPlannerModelAdapter(
+        [
+            "return wf.vars.emails[1]",
+            "return wf.vars.emails[#wf.vars.emails]",
+        ]
+    )
+    service = GenerationService(model_adapter=model_adapter)
+
+    result = service.generate(
+        task_text="Из полученного списка email получи последний.",
+        provided_context=json.dumps(
+            {
+                "wf": {
+                    "vars": {
+                        "emails": [
+                            "user1@example.com",
+                            "user2@example.com",
+                            "user3@example.com",
+                        ]
+                    }
+                }
+            }
+        ),
+        debug=True,
+    )
+
+    assert result["validation_status"] == "repaired"
+    assert result["code"] == "return wf.vars.emails[#wf.vars.emails]"
+    debug = result["debug"]
+    assert debug is not None
+    assert debug["prompt_package"]["task_spec"]["archetype"] == "transformation"
+    assert debug["prompt_package"]["task_spec"]["operation"] == "last_array_item"
+    assert debug["validation_passes"][0]["principle_report"]["status"] == "pass"
+    assert debug["validation_passes"][0]["runtime_report"]["status"] == "fail"
+    assert debug["validation_passes"][0]["runtime_report"]["findings"][0]["failure_class"] == "runtime_behavior_mismatch"
 
 
 def test_generation_service_applies_compact_planner_and_prompter_protocol() -> None:

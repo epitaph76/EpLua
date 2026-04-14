@@ -18,6 +18,8 @@ class PlannerResult:
     language: str
     input_roots: tuple[str, ...]
     explicit_input_basis: bool
+    explicit_archetype: bool
+    explicit_output_mode: bool
     task_intents: tuple[str, ...]
     clarification_required: bool
     execution_context: Any | None
@@ -31,6 +33,8 @@ class PlannerResult:
             "language": self.language,
             "input_roots": list(self.input_roots),
             "explicit_input_basis": self.explicit_input_basis,
+            "explicit_archetype": self.explicit_archetype,
+            "explicit_output_mode": self.explicit_output_mode,
             "task_intents": list(self.task_intents),
             "clarification_required": self.clarification_required,
             "task_spec": self.task_spec.to_dict(),
@@ -49,6 +53,8 @@ def plan_task(
     output_mode: str,
     input_roots: list[str] | None,
     risk_tags: tuple[str, ...],
+    explicit_archetype: bool = False,
+    explicit_output_mode: bool = False,
 ) -> PlannerResult:
     normalized_language = normalize_language(language)
     normalized_roots, explicit_input_basis = _normalize_input_roots(provided_context, input_roots)
@@ -70,6 +76,8 @@ def plan_task(
         language=normalized_language,
         input_roots=normalized_roots,
         explicit_input_basis=explicit_input_basis,
+        explicit_archetype=explicit_archetype,
+        explicit_output_mode=explicit_output_mode,
         task_intents=tuple(),
         clarification_required=False,
         execution_context=_parse_context_object(provided_context),
@@ -154,12 +162,13 @@ def build_planner_agent_prompt(
             "Do not generate Lua code.",
             "Return one compact minified JSON object only.",
             "Use short keys to fit small num_predict budgets.",
-            "Short key map: op=operation, mode=output_mode, roots=input_roots, shape=expected_shape, risks=risk_tags, edges=edge_cases, intents=task_intents, clar=clarification_required, q=clarification_question.",
-            "You are responsible for semantic choices: op, shape, intents, and clar.",
+            "Short key map: arch=archetype, op=operation, mode=output_mode, roots=input_roots, shape=expected_shape, risks=risk_tags, edges=edge_cases, intents=task_intents, clar=clarification_required, q=clarification_question.",
+            "You are responsible for semantic choices: arch, op, mode, shape, intents, risks, and clar.",
             "Use the deterministic fallback only as structural evidence about language, context roots, and safe defaults.",
-            "Keep the given archetype unless the task is truly impossible under it.",
+            "If explicit_archetype is true, preserve the given archetype. Otherwise choose the best archetype for the task.",
+            "If explicit_output_mode is true, preserve the given output mode. Otherwise choose the best output mode for the task.",
             "Required compact JSON shape:",
-            '{"op":"last_array_item","mode":"raw_lua","roots":["wf.vars.emails"],"shape":"scalar_or_nil","risks":["array_indexing"],"edges":["single_item","empty_array"],"clar":false,"q":null,"intents":[]}',
+            '{"arch":"simple_extraction","op":"last_array_item","mode":"raw_lua","roots":["wf.vars.emails"],"shape":"scalar_or_nil","risks":["array_indexing"],"edges":["single_item","empty_array"],"clar":false,"q":null,"intents":[]}',
         ]
     )
     user_prompt = "\n".join(
@@ -178,6 +187,8 @@ def build_planner_agent_prompt(
                     "roots": list(fallback_result.input_roots),
                     "explicit_roots": fallback_result.explicit_input_basis,
                     "explicit_input_basis": fallback_result.explicit_input_basis,
+                    "explicit_archetype": fallback_result.explicit_archetype,
+                    "explicit_output_mode": fallback_result.explicit_output_mode,
                     "risks": list(fallback_result.task_spec.risk_tags),
                 },
                 ensure_ascii=False,
@@ -194,7 +205,12 @@ def build_planner_agent_prompt(
     )
 
 
-def apply_planner_agent_response(raw_response: str, fallback_result: PlannerResult) -> PlannerResult:
+def apply_planner_agent_response(
+    raw_response: str,
+    fallback_result: PlannerResult,
+    *,
+    allowed_archetypes: tuple[str, ...] | None = None,
+) -> PlannerResult:
     payload = _extract_json_payload(raw_response)
     source = "agent"
     fallback_reason = None
@@ -210,9 +226,17 @@ def apply_planner_agent_response(raw_response: str, fallback_result: PlannerResu
 
     operation = _string_or(payload.get("operation"), fallback_result.task_spec.operation)
     expected_shape = _string_or(payload.get("expected_shape"), fallback_result.task_spec.expected_shape)
-    output_mode = _string_or(payload.get("output_mode"), fallback_result.task_spec.output_mode)
-    if output_mode not in {"raw_lua", "json_wrapper", "patch_mode", "clarification"}:
-        output_mode = fallback_result.task_spec.output_mode
+    output_mode = fallback_result.task_spec.output_mode
+    if not fallback_result.explicit_output_mode:
+        output_mode = _string_or(payload.get("output_mode"), output_mode)
+        if output_mode not in {"raw_lua", "json_wrapper", "patch_mode", "clarification"}:
+            output_mode = fallback_result.task_spec.output_mode
+
+    archetype = fallback_result.task_spec.archetype
+    if not fallback_result.explicit_archetype:
+        archetype = _string_or(payload.get("archetype"), archetype)
+        if allowed_archetypes and archetype not in allowed_archetypes:
+            archetype = fallback_result.task_spec.archetype
 
     input_roots = _string_tuple(payload.get("input_roots"))
     if not input_roots or not all(_is_allowed_root(root) for root in input_roots):
@@ -231,7 +255,7 @@ def apply_planner_agent_response(raw_response: str, fallback_result: PlannerResu
     task_spec = TaskSpec(
         task_text=fallback_result.task_spec.task_text,
         language=fallback_result.language,
-        archetype=fallback_result.task_spec.archetype,
+        archetype=archetype,
         operation=operation,
         output_mode=output_mode,
         input_roots=input_roots,
@@ -246,6 +270,8 @@ def apply_planner_agent_response(raw_response: str, fallback_result: PlannerResu
         language=fallback_result.language,
         input_roots=input_roots,
         explicit_input_basis=fallback_result.explicit_input_basis,
+        explicit_archetype=fallback_result.explicit_archetype,
+        explicit_output_mode=fallback_result.explicit_output_mode,
         task_intents=task_intents,
         clarification_required=clarification_required,
         execution_context=fallback_result.execution_context,
@@ -260,6 +286,8 @@ def _planner_fallback(fallback_result: PlannerResult, reason: str) -> PlannerRes
         language=fallback_result.language,
         input_roots=fallback_result.input_roots,
         explicit_input_basis=fallback_result.explicit_input_basis,
+        explicit_archetype=fallback_result.explicit_archetype,
+        explicit_output_mode=fallback_result.explicit_output_mode,
         task_intents=fallback_result.task_intents,
         clarification_required=fallback_result.clarification_required,
         execution_context=fallback_result.execution_context,
@@ -282,7 +310,7 @@ def _extract_json_payload(raw_response: str) -> dict[str, Any] | None:
 
 def _extract_partial_planner_payload(raw_response: str) -> dict[str, Any] | None:
     payload: dict[str, Any] = {}
-    for key in ("operation", "output_mode", "expected_shape", "clarification_question", "op", "mode", "shape", "q"):
+    for key in ("archetype", "operation", "output_mode", "expected_shape", "clarification_question", "arch", "op", "mode", "shape", "q"):
         value = _extract_partial_string_field(raw_response, key)
         if value is not None:
             payload[key] = value
@@ -306,6 +334,7 @@ def _extract_partial_planner_payload(raw_response: str) -> dict[str, Any] | None
 
 def _normalize_planner_payload_aliases(payload: dict[str, Any]) -> dict[str, Any]:
     alias_map = {
+        "arch": "archetype",
         "op": "operation",
         "mode": "output_mode",
         "roots": "input_roots",

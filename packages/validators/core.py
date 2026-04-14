@@ -17,6 +17,7 @@ RAW_LUA = "raw_lua"
 JSON_WRAPPER = "json_wrapper"
 PATCH_MODE = "patch_mode"
 CLARIFICATION = "clarification"
+_ARRAY_ITEM_OPERATIONS = {"last_array_item", "first_array_item"}
 
 _WF_ROOT_PATTERN = re.compile(r"wf\.(?:vars|initVariables)\.[A-Za-z0-9_\.]+")
 _JSONPATH_PATTERN = re.compile(r"[$@]\.[A-Za-z0-9_.*]+")
@@ -362,10 +363,7 @@ def validate_runtime_behavior(
     if execution_context is None:
         return _skipped_report("runtime_validator", "missing_execution_context")
 
-    if task_spec.archetype != "simple_extraction":
-        return _skipped_report("runtime_validator", "unsupported_archetype")
-
-    if task_spec.operation not in {"last_array_item", "first_array_item"}:
+    if not _supports_array_item_validation(task_spec):
         return _skipped_report("runtime_validator", "unsupported_operation")
 
     lua_segments = _extract_lua_segments(candidate, output_mode)
@@ -1086,12 +1084,18 @@ def _runtime_values_match(
     return actual_value == expected_value
 
 
+def _supports_array_item_validation(task_spec: TaskSpec) -> bool:
+    if task_spec.operation not in _ARRAY_ITEM_OPERATIONS:
+        return False
+    if not task_spec.input_roots:
+        return False
+    if task_spec.archetype == "simple_extraction":
+        return True
+    return task_spec.expected_shape == "scalar_or_nil" and "array_indexing" in task_spec.risk_tags
+
+
 def _validate_task_spec_shape(lua_segments: list[tuple[str, str]], task_spec: TaskSpec) -> list[ValidationFinding]:
-    if task_spec.archetype != "simple_extraction":
-        return []
-    if task_spec.operation not in {"last_array_item", "first_array_item"}:
-        return []
-    if task_spec.expected_shape != "scalar_or_nil" or not task_spec.input_roots:
+    if not _supports_array_item_validation(task_spec):
         return []
 
     combined_segments = "\n".join(segment for _, segment in lua_segments)

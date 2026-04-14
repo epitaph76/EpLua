@@ -280,12 +280,10 @@ def test_cli_chat_accepts_plain_text_task(monkeypatch, capsys) -> None:
         "provided_context": None,
         "debug": False,
         "mode": "release",
-        "archetype": "simple_extraction",
-        "output_mode": "raw_lua",
     }
 
 
-def test_cli_chat_splits_inline_json_context_and_requests_raw_lua(monkeypatch, capsys) -> None:
+def test_cli_chat_splits_inline_json_context_without_semantic_overrides(monkeypatch, capsys) -> None:
     http_client = RecordingHttpClient()
     monkeypatch.setattr(cli_main.httpx, "Client", lambda: http_client)
     commands = iter(
@@ -305,14 +303,10 @@ def test_cli_chat_splits_inline_json_context_and_requests_raw_lua(monkeypatch, c
         "provided_context": '{"wf":{"vars":{"emails":["user1@example.com","user2@example.com","user3@example.com"]}}}',
         "debug": False,
         "mode": "release",
-        "archetype": "simple_extraction",
-        "output_mode": "raw_lua",
-        "input_roots": ["wf.vars.emails"],
-        "risk_tags": ["array_indexing", "empty_array"],
     }
 
 
-def test_cli_chat_context_command_infers_roots_for_next_task(monkeypatch, capsys) -> None:
+def test_cli_chat_context_command_keeps_raw_context_for_next_task(monkeypatch, capsys) -> None:
     http_client = RecordingHttpClient()
     monkeypatch.setattr(cli_main.httpx, "Client", lambda: http_client)
     commands = iter(
@@ -332,13 +326,9 @@ def test_cli_chat_context_command_infers_roots_for_next_task(monkeypatch, capsys
     assert "return wf.vars.emails[#wf.vars.emails]" in output
     assert http_client.posts[0]["json"] == {
         "task_text": "Из полученного списка email получи последний.",
-        "provided_context": '{"wf":{"vars":{"emails":["user1@example.com","user2@example.com","user3@example.com"]}}}',
+        "provided_context": '{ "wf": { "vars": { "emails": [ "user1@example.com", "user2@example.com", "user3@example.com" ] } } }',
         "debug": False,
         "mode": "release",
-        "archetype": "simple_extraction",
-        "output_mode": "raw_lua",
-        "input_roots": ["wf.vars.emails"],
-        "risk_tags": ["array_indexing", "empty_array"],
     }
     assert output.count("Mode: release | Lang: ru | Model: qwen2.5-coder:3b | Path: with-api | Allow cloud: False | Params: num_ctx=4096 num_predict=256 batch=1 parallel=1") == 1
 
@@ -366,8 +356,6 @@ def test_cli_chat_slash_commands_switch_debug_cloud_model(monkeypatch, capsys) -
         "provided_context": None,
         "debug": True,
         "mode": "debug",
-        "archetype": "transformation",
-        "output_mode": "raw_lua",
         "model": "gpt-oss:20b-cloud",
         "allow_cloud_model": True,
     }
@@ -674,6 +662,6 @@ def test_cli_chat_plan_explains_narrowing_and_feedback(monkeypatch, capsys) -> N
     assert cli_main.main(["chat"]) == 0
 
     output = capsys.readouterr().out
-    assert "infer roots" in output
+    assert "explicit roots" in output
     assert "narrow JSON context" in output
     assert "ask for feedback" in output

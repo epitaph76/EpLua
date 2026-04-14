@@ -39,53 +39,18 @@ class GenerationService:
             runtime_options=runtime_options,
             allow_cloud_model=allow_cloud_model,
         )
-        if archetype and output_mode:
-            agent_runner = getattr(model_adapter, "generate_from_agent", None)
-            prompt_package = build_domain_prompt_package(
-                task_text,
-                provided_context,
-                archetype=archetype,
-                output_mode=output_mode,
-                input_roots=input_roots,
-                risk_tags=risk_tags,
-                language=language,
-                agent_runner=agent_runner if callable(agent_runner) else None,
-            )
-            return run_quality_loop(model_adapter, prompt_package, debug=debug).to_dict()
-
-        if debug:
-            prompt_parts = [task_text]
-            if provided_context:
-                prompt_parts.append(provided_context)
-            prompt = "\n\n".join(prompt_parts)
-            code = model_adapter.generate_from_prompt(prompt)
-            debug_payload: dict[str, object] | None = {
-                "prompt_package": None,
-                "model_calls": [
-                    {
-                        "phase": "generation",
-                        "prompt": prompt,
-                        "raw_response": code,
-                    }
-                ],
-                "validation_passes": [],
-            }
-        else:
-            code = model_adapter.generate(task_text, provided_context)
-            debug_payload = None
-        return {
-            "code": code,
-            "validation_status": "not_run",
-            "stop_reason": "not_run",
-            "trace": ["request_received", "model_invoked", "response_ready"],
-            "validator_report": None,
-            "critic_report": None,
-            "repair_count": 0,
-            "clarification_count": 0,
-            "output_mode": None,
-            "archetype": None,
-            "debug": debug_payload,
-        }
+        agent_runner = getattr(model_adapter, "generate_from_agent", None)
+        prompt_package = build_domain_prompt_package(
+            task_text,
+            provided_context,
+            archetype=archetype,
+            output_mode=output_mode,
+            input_roots=input_roots,
+            risk_tags=risk_tags,
+            language=language,
+            agent_runner=agent_runner if callable(agent_runner) else None,
+        )
+        return run_quality_loop(model_adapter, prompt_package, debug=debug).to_dict()
 
     def _adapter_for_request(
         self,

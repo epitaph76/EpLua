@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Protocol
+from typing import Any, Protocol
 
 from packages.orchestrator.critic import (
     build_critic_report,
@@ -205,8 +205,9 @@ def run_quality_loop(
             )
 
         current_visible_candidate = normalized_candidate or candidate.strip()
+        effective_task_spec = runtime_task_spec or prompt_package.task_spec
         validation_bundle = _build_validation_bundle(
-            task_spec=prompt_package.task_spec,
+            task_spec=effective_task_spec,
             current_candidate=current_visible_candidate,
             format_report=format_report,
             syntax_report=syntax_report,
@@ -463,14 +464,40 @@ def _runtime_task_spec_for_validation(prompt_package: DomainPromptPackage) -> Ta
 
 
 def _runtime_supported_task_spec(task_spec: TaskSpec) -> bool:
-    return task_spec.archetype == "simple_extraction" and task_spec.operation in {"last_array_item", "first_array_item"}
+    if task_spec.operation not in {"last_array_item", "first_array_item"}:
+        return False
+    if not task_spec.input_roots:
+        return False
+    if task_spec.archetype == "simple_extraction":
+        return True
+    return task_spec.expected_shape == "scalar_or_nil" and "array_indexing" in task_spec.risk_tags
 
 
 def _runtime_backstop_task_spec(prompt_package: DomainPromptPackage) -> TaskSpec | None:
     task_spec = prompt_package.task_spec
-    if task_spec.archetype != "simple_extraction" or task_spec.operation != "unresolved":
+    if task_spec.operation != "unresolved":
         return None
-    if len(task_spec.input_roots) != 1 or "array_indexing" not in task_spec.risk_tags:
+    if len(task_spec.input_roots) != 1:
+        return None
+    if task_spec.output_mode in {PATCH_MODE, CLARIFICATION}:
+        return None
+
+    inferred_operation = _infer_runtime_backstop_operation(task_spec.task_text)
+    root_value = _resolve_runtime_backstop_root(prompt_package.execution_context, task_spec.input_roots[0])
+    if inferred_operation is not None and isinstance(root_value, list):
+        fallback_spec = build_task_spec(
+            task_spec.task_text,
+            language=task_spec.language,
+            archetype="simple_extraction",
+            output_mode=task_spec.output_mode,
+            input_roots=task_spec.input_roots,
+            risk_tags=tuple(dict.fromkeys((*task_spec.risk_tags, "array_indexing", "empty_array"))),
+            clarification_required=task_spec.clarification_required,
+        )
+        if _runtime_supported_task_spec(fallback_spec):
+            return fallback_spec
+
+    if task_spec.archetype != "simple_extraction" or "array_indexing" not in task_spec.risk_tags:
         return None
 
     fallback_spec = build_task_spec(
@@ -485,6 +512,24 @@ def _runtime_backstop_task_spec(prompt_package: DomainPromptPackage) -> TaskSpec
     if not _runtime_supported_task_spec(fallback_spec):
         return None
     return fallback_spec
+
+
+def _infer_runtime_backstop_operation(task_text: str) -> str | None:
+    lowered = task_text.lower()
+    if "послед" in lowered or "last" in lowered:
+        return "last_array_item"
+    if "перв" in lowered or "first" in lowered:
+        return "first_array_item"
+    return None
+
+
+def _resolve_runtime_backstop_root(execution_context: Any | None, root: str) -> Any | None:
+    current = execution_context
+    for part in root.split("."):
+        if not isinstance(current, dict) or part not in current:
+            return None
+        current = current[part]
+    return current
 
 
 def _validation_gate_passed(
