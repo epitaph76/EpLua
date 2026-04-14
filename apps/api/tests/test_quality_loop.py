@@ -389,7 +389,7 @@ def test_planner_agent_accepts_compact_response_keys() -> None:
 
 
 def test_generation_service_uses_simplified_agentic_contour_without_validation_loop() -> None:
-    model_adapter = AgenticPromptModelAdapter(
+    model_adapter = CompactAgentProtocolModelAdapter(
         [
             "```lua\nreturn wf.vars.emails[#wf.vars.emails]\n```",
         ]
@@ -441,6 +441,10 @@ def test_generation_service_uses_simplified_agentic_contour_without_validation_l
 
     debug = result["debug"]
     assert debug is not None
+    generator_system_prompt = debug["prompt_package"]["agent_prompt"]["messages"][0]["content"]
+    assert "Return the selected array item, not the array/table itself." in generator_system_prompt
+    assert "For last_array_item, use the last Lua array element at values[#values]." in generator_system_prompt
+    assert "Do not wrap raw_lua output in markdown fences; the first response token must be Lua code." in generator_system_prompt
     assert [layer["stage"] for layer in debug["pipeline_layers"]] == [
         "input_normalization",
         "planner",
