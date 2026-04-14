@@ -24,6 +24,7 @@ class FakeGenerationService:
         runtime_options: dict[str, int | float] | None = None,
         allow_cloud_model: bool = False,
         language: str = "ru",
+        repair_budget: int = 2,
     ) -> dict[str, object]:
         assert task_text == "make a LocalScript"
         assert provided_context == "inventory payload"
@@ -34,9 +35,10 @@ class FakeGenerationService:
         assert debug is False
         assert mode == "release"
         assert model is None
-        assert runtime_options is None
+        assert runtime_options == {"num_ctx": 4096, "num_predict": 256, "batch": 1, "temperature": 0.8, "num_gpu": -1}
         assert allow_cloud_model is False
         assert language == "ru"
+        assert repair_budget == 2
 
         return {
             "code": "print('ok')",
@@ -62,6 +64,7 @@ class FailingGenerationService:
         runtime_options: dict[str, int] | None = None,
         allow_cloud_model: bool = False,
         language: str = "ru",
+        repair_budget: int = 2,
     ) -> dict[str, object]:
         raise ApiError(status_code=502, code="model_error", message="Local model request failed.")
 
@@ -82,6 +85,7 @@ class QualityGenerationService:
         runtime_options: dict[str, int] | None = None,
         allow_cloud_model: bool = False,
         language: str = "ru",
+        repair_budget: int = 2,
     ) -> dict[str, object]:
         assert task_text == "make a LocalScript"
         assert provided_context == "inventory payload"
@@ -91,6 +95,7 @@ class QualityGenerationService:
         assert risk_tags == ["array_indexing", "empty_array"]
         assert debug is False
         assert language == "ru"
+        assert repair_budget == 2
 
         return {
             "code": "return wf.vars.emails[#wf.vars.emails]",
@@ -132,9 +137,11 @@ class DebugGenerationService:
         runtime_options: dict[str, int] | None = None,
         allow_cloud_model: bool = False,
         language: str = "ru",
+        repair_budget: int = 2,
     ) -> dict[str, object]:
         assert debug is True
         assert language == "ru"
+        assert repair_budget == 2
         return {
             "code": "return wf.vars.emails[#wf.vars.emails]",
             "validation_status": "repaired",
@@ -185,6 +192,7 @@ class RuntimePolicyGenerationService:
         runtime_options: dict[str, int] | None = None,
         allow_cloud_model: bool = False,
         language: str = "ru",
+        repair_budget: int = 2,
     ) -> dict[str, object]:
         assert task_text == "make a LocalScript"
         assert provided_context == "inventory payload"
@@ -195,9 +203,10 @@ class RuntimePolicyGenerationService:
         assert debug is True
         assert mode == "debug"
         assert model == "qwen2.5-coder:7b"
-        assert runtime_options == {"num_ctx": 2048, "num_predict": 128, "batch": 1, "temperature": 0.8}
+        assert runtime_options == {"num_ctx": 2048, "num_predict": 128, "batch": 1, "temperature": 0.8, "num_gpu": -1}
         assert allow_cloud_model is False
         assert language == "ru"
+        assert repair_budget == 2
         return {
             "code": "print('debug')",
             "validation_status": "not_run",
@@ -222,13 +231,60 @@ class LanguageGenerationService:
         runtime_options: dict[str, int] | None = None,
         allow_cloud_model: bool = False,
         language: str = "ru",
+        repair_budget: int = 2,
     ) -> dict[str, object]:
         assert language == "en"
+        assert repair_budget == 2
         return {
             "code": "print('ok')",
             "validation_status": "not_run",
             "stop_reason": "not_run",
             "trace": ["request_received", "response_ready"],
+        }
+
+
+class StreamingProgressGenerationService:
+    def generate(
+        self,
+        task_text: str,
+        provided_context: str | None = None,
+        *,
+        archetype: str | None = None,
+        output_mode: str | None = None,
+        input_roots: list[str] | None = None,
+        risk_tags: list[str] | None = None,
+        debug: bool = False,
+        mode: str = "release",
+        model: str | None = None,
+        runtime_options: dict[str, int] | None = None,
+        allow_cloud_model: bool = False,
+        language: str = "ru",
+        repair_budget: int = 2,
+        progress_callback=None,
+    ) -> dict[str, object]:
+        assert task_text == "make a LocalScript"
+        assert callable(progress_callback)
+        for stage in (
+            "request_received",
+            "planner",
+            "prompter",
+            "generation",
+            "deterministic_validation",
+            "response_ready",
+        ):
+            progress_callback(stage)
+        return {
+            "code": "print('ok')",
+            "validation_status": "passed",
+            "stop_reason": "passed",
+            "trace": [
+                "request_received",
+                "planner",
+                "prompter",
+                "generation",
+                "deterministic_validation",
+                "response_ready",
+            ],
         }
 
 
@@ -281,6 +337,50 @@ def test_generate_passes_explicit_language_to_service() -> None:
 
     assert response.status_code == 200
     assert response.json()["code"] == "print('ok')"
+
+
+def test_generate_progress_streams_stage_events_before_final_payload() -> None:
+    client = TestClient(app)
+    app.dependency_overrides[get_generation_service] = lambda: StreamingProgressGenerationService()
+
+    try:
+        with client.stream("POST", "/generate/progress", json={"task_text": "make a LocalScript"}) as response:
+            events = [json.loads(line) for line in response.iter_lines() if line]
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert [event["stage"] for event in events if event["type"] == "progress"] == [
+        "request_received",
+        "planner",
+        "prompter",
+        "generation",
+        "deterministic_validation",
+        "response_ready",
+    ]
+    assert events[-1] == {
+        "type": "final",
+        "payload": {
+            "code": "print('ok')",
+            "validation_status": "passed",
+            "stop_reason": "passed",
+            "trace": [
+                "request_received",
+                "planner",
+                "prompter",
+                "generation",
+                "deterministic_validation",
+                "response_ready",
+            ],
+            "validator_report": None,
+            "critic_report": None,
+            "repair_count": 0,
+            "clarification_count": 0,
+            "output_mode": None,
+            "archetype": None,
+            "debug": None,
+        },
+    }
 
 
 def test_generate_passes_quality_metadata_and_returns_quality_state() -> None:
@@ -364,7 +464,7 @@ def test_generate_passes_runtime_policy_fields() -> None:
                 "debug": True,
                 "mode": "debug",
                 "model": "qwen2.5-coder:7b",
-                "runtime_options": {"num_ctx": 2048, "num_predict": 128, "batch": 1},
+                "runtime_options": {"num_ctx": 2048, "num_predict": 128, "batch": 1, "num_gpu": -1},
             },
         )
     finally:

@@ -482,6 +482,34 @@ def test_ollama_adapter_retries_agentic_generate_prompt_when_output_hits_num_pre
     assert "truncated by the token budget" in str(http_client.calls[1]["json"]["prompt"])
 
 
+def test_ollama_adapter_exposes_prompt_generation_metadata_without_retrying(monkeypatch) -> None:
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "qwen2.5-coder:3b")
+
+    http_client = SequencedPayloadHttpClient(
+        [
+            {
+                "response": '{"result":"lua{return wf.vars.em',
+                "eval_count": 256,
+            }
+        ]
+    )
+    adapter = OllamaModelAdapter(
+        http_client=http_client,
+        runtime_options=RuntimeOptions(num_ctx=4096, num_predict=256, batch=1),
+    )
+
+    result = adapter.generate_from_prompt_with_metadata("GENERATOR PROMPT")
+
+    assert result == {
+        "response": '{"result":"lua{return wf.vars.em',
+        "eval_count": 256,
+        "num_predict": 256,
+    }
+    assert len(http_client.calls) == 1
+    assert http_client.calls[0]["json"]["prompt"] == "GENERATOR PROMPT"
+
+
 def test_ollama_adapter_falls_back_to_legacy_prompt_when_agent_chat_content_is_empty(monkeypatch) -> None:
     monkeypatch.setenv("OLLAMA_BASE_URL", "http://localhost:11434")
     monkeypatch.setenv("OLLAMA_MODEL", "qwen2.5-coder:3b")

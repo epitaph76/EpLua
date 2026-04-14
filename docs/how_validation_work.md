@@ -233,7 +233,7 @@ python -m pytest .\apps\api\tests -q
 Целевой принцип:
 
 ```text
-generate first, validate explicitly, repair only after observable failure
+plan explicitly -> prompt explicitly -> generate -> validate deterministically -> critic decides -> repair with bounded retries
 ```
 
 Новый pipeline должен быть:
@@ -244,7 +244,41 @@ generate first, validate explicitly, repair only after observable failure
 - без silent mutation model output;
 - без хардкода под один пример;
 - без CLI-эвристик, которые заранее решают semantic intent за пользователя;
-- без скрытой “починки” candidate между generator и validator.
+- без скрытой “починки” candidate между generator и validator;
+- с bounded repair budget;
+- с truncation guard на каждом agentic этапе.
+
+Целевой полный контур:
+
+```text
+request_received
+-> planner
+-> prompter
+-> generator
+-> deterministic_validation
+-> critic
+-> finalize | repair_prompting | clarification
+```
+
+Если critic выбирает repair:
+
+```text
+critic_findings
+-> prompter
+-> generator
+-> deterministic_validation
+-> critic
+```
+
+Если после 4 прогонов candidate generation результат всё ещё невалидный или critic не может уверенно завершить задачу, pipeline должен остановиться и попросить уточнение у пользователя.
+
+Agentic truncation guard:
+
+- применяется к `planner`, `prompter`, `generator`, `critic` и repair-вариантам этих шагов;
+- если agentic output упёрся в лимит `num_predict`, например `256` токенов, считать это подозрением на truncation;
+- такой output нельзя молча принимать как нормальный успех;
+- тот же agentic stage должен быть запущен заново с явной инструкцией сделать ответ короче и вернуть только минимально нужную структуру;
+- truncation retry должен быть ограниченным и трассируемым, чтобы не получить бесконечный цикл.
 
 ## 8. Proposed Pipeline Stages
 
@@ -256,29 +290,119 @@ generate first, validate explicitly, repair only after observable failure
 
 - сохранить текущий generator-only path как baseline;
 - не ломать LowCode prompt contract;
-- не возвращать старый repair loop целиком.
+- не возвращать старый repair loop целиком как black box.
 
 Done criteria:
 
 - `/generate` стабильно возвращает model response;
 - debug показывает prompt и raw response;
-- `validation_status = "not_run"` остаётся честным, пока validation не подключена.
+- `validation_status = "not_run"` остаётся честным, пока новый pipeline не подключен.
 
-### Stage 1. Output Contract Validation
+### Stage 1. Planner Agent
 
 Цель:
 
-- добавить первый post-generator validator только для outer response shape.
+- вернуть planner как явный agentic слой, но без старых CLI-эвристик.
 
-Проверять:
+Planner получает:
+
+- raw `task_text`;
+- raw или явно переданный `provided_context`;
+- structural facts, если они есть и явно помечены как facts/hints.
+
+Planner возвращает компактный `TaskSpec`:
+
+- `operation`;
+- `output_mode`;
+- `input_roots`;
+- `expected_shape`;
+- `risk_tags`;
+- `edge_cases`;
+- `clarification_required`;
+- `clarification_question`.
+
+Не делать:
+
+- не генерировать Lua;
+- не принимать обрезанный output за успех;
+- не подменять пустой/битый planner output молчаливым semantic fallback.
+
+### Stage 2. Prompter Agent
+
+Цель:
+
+- собрать короткий и точный prompt для generator из `TaskSpec`, user task и context.
+
+Prompter получает:
+
+- `TaskSpec` от planner;
+- raw user task;
+- relevant context;
+- hard output contract.
+
+Prompter возвращает:
+
+- system/user prompt или короткие prompt sections для generator;
+- без Lua candidate;
+- без полного echo всего fallback prompt.
+
+Правило:
+
+- если prompter упёрся в `num_predict`, stage повторяется с требованием сократить output.
+
+### Stage 3. Generator Agent
+
+Цель:
+
+- получить candidate в текущем LowCode формате.
+
+Generator получает:
+
+- prompt от prompter;
+- task/context в достаточном для решения виде;
+- output contract.
+
+Generator возвращает:
+
+- только JSON object;
+- Lua-фрагменты только как JSON string values формата `lua{<Lua код>}lua`;
+- без markdown, prose, debug text, copied prompt text.
+
+Пример:
+
+```json
+{
+  "result": "lua{return wf.vars.emails[#wf.vars.emails]}lua"
+}
+```
+
+Правило:
+
+- если generator output упёрся в `num_predict`, это не validator failure, а agentic truncation failure;
+- generator stage повторяется с указанием вернуть более короткий JSON candidate.
+
+### Stage 4. Deterministic Validation
+
+Цель:
+
+- проверить candidate неагентно перед critic.
+
+Проверять outer contract:
 
 - ответ является JSON object;
-- все Lua values являются строками;
+- все generated Lua values являются JSON strings;
 - Lua strings обёрнуты в `lua{...}lua`;
 - нет markdown;
 - нет текста до или после JSON object;
 - нет `print` / debug output;
 - Lua fragment использует `return`, если задача просит получить значение.
+
+Проверять Lua syntax:
+
+- извлечь каждый `lua{...}lua` fragment;
+- проверить, что Lua fragment синтаксически валиден;
+- не исполнять код на этом этапе;
+- не использовать LLM для синтаксической проверки.
 
 Не делать:
 
@@ -290,56 +414,24 @@ Done criteria:
 Минимальный результат:
 
 ```text
-request_received -> generation -> output_contract_validation -> response_ready
+request_received -> planner -> prompter -> generator -> deterministic_validation
 ```
 
-### Stage 2. LowCode Static Rules
-
-Цель:
-
-- проверить доменные ограничения Lua / LowCode без исполнения.
-
-Проверять:
-
-- JsonPath не используется;
-- доступ идёт через `wf.vars` или `wf.initVariables`;
-- новые поля не создаются без явного запроса на mutation/save;
-- используются разрешённые конструкции;
-- массивы создаются через `_utils.array.new()`, если создаётся новый массив;
-- существующие массивы индексируются обычной Lua-индексацией.
-
-Минимальный результат:
-
-```text
-request_received -> generation -> output_contract_validation -> lowcode_static_validation -> response_ready
-```
-
-### Stage 3. Runtime Behavioral Validation
-
-Цель:
-
-- проверять фактическое поведение на простых кейсах, где есть безопасный execution context.
-
-Порядок:
-
-1. извлечь Lua fragment из JSON object;
-2. собрать runtime fixture из `provided_context`;
-3. выполнить Lua в контролируемой среде;
-4. сравнить actual result с expected behavior.
-
-Важно:
-
-- runtime validator должен запускаться только для поддержанных операций;
-- если операция не определена, status должен быть `skipped`, а не fake pass;
-- first slice лучше делать на простых extraction задачах, например last array item / first array item.
-
-### Stage 4. Critic Decision Layer
+### Stage 5. Critic Decision Layer
 
 Цель:
 
 - добавить отдельный decision layer поверх validator reports.
 
-Critic должен решать:
+Critic получает:
+
+- `TaskSpec`;
+- raw candidate от generator;
+- deterministic validator reports;
+- номер текущего прогона;
+- историю предыдущих failures, если это repair iteration.
+
+Critic решает:
 
 - `finalize`;
 - `repair`;
@@ -349,21 +441,38 @@ Critic должен решать:
 Важно:
 
 - critic не должен скрывать validator failure;
-- semantic reasoning не должен подменять фактический runtime failure;
-- любые false-positive overrides должны быть явными и трассируемыми.
+- critic не должен чинить candidate сам;
+- critic должен вернуть structured findings для prompter, если выбран `repair`;
+- если critic output упёрся в `num_predict`, critic stage повторяется с требованием короткого structured decision.
 
-### Stage 5. Repair Loop
+### Stage 6. Repair Prompting And Bounded Loop
 
 Цель:
 
 - вернуть repair только после того, как есть явные validator reports.
 
-Правила:
+Repair flow:
+
+```text
+critic findings -> prompter repair prompt -> generator repaired candidate -> deterministic_validation -> critic
+```
+
+Prompter на repair iteration получает:
+
+- исходный `TaskSpec`;
+- текущий invalid candidate;
+- validator findings;
+- critic findings;
+- короткую инструкцию, что именно исправить.
+
+Правила budget:
 
 - repair prompt должен получать компактный structured failure summary;
 - repair iteration должна добавлять trace entry;
-- repeated failure / oscillation должны быть ограничены budget'ом;
-- deterministic repairs допустимы только как отдельный явный stage с report.
+- максимум 4 прогона candidate generation;
+- если после 4 прогонов не получилось, остановиться и попросить уточнение у пользователя;
+- repeated failure / oscillation должны быть отдельными stop reasons;
+- deterministic repairs не добавлять на первом этапе нового pipeline.
 
 Не делать:
 
@@ -371,7 +480,7 @@ Critic должен решать:
 - не чинить model output перед validation без report;
 - не смешивать cleanup, validation и repair в одном helper'е.
 
-### Stage 6. Observability And Metrics
+### Stage 7. Observability And Metrics
 
 Цель:
 
@@ -381,9 +490,11 @@ Debug должен показывать:
 
 - prompt package;
 - raw model response;
-- каждый validation stage;
+- каждый agentic stage;
+- каждый deterministic validation stage;
 - статус каждого stage;
 - findings;
+- truncation retries;
 - repair prompt, если repair был;
 - final decision и stop reason.
 
@@ -395,28 +506,35 @@ Debug должен показывать:
    - Статус: done in current branch.
    - Проверка: generator-only тесты и debug trace.
 
-2. Добавить `output_contract_validation`.
+2. Вернуть `planner` как явный agentic stage.
    - Статус: next.
-   - Минимальный scope: JSON object + `lua{...}lua` string leaves + no markdown/prose.
-   - Без repair.
+   - Минимальный scope: planner возвращает compact `TaskSpec`, без Lua.
 
-3. Добавить `lowcode_static_validation`.
+3. Вернуть `prompter` как явный agentic stage.
    - Статус: pending.
-   - Минимальный scope: JsonPath, forbidden roots, mutation without explicit request.
+   - Минимальный scope: prompter строит короткий generator prompt из `TaskSpec`.
 
-4. Добавить `runtime_behavior_validation`.
+4. Подключить `generator` к prompter output.
    - Статус: pending.
-   - Минимальный scope: supported extraction operations with explicit context.
+   - Минимальный scope: generator возвращает JSON object с `lua{...}lua`.
 
-5. Добавить critic decision layer.
+5. Добавить deterministic validation.
    - Статус: pending.
-   - Минимальный scope: choose finalize / clarification / bounded_failure before repair.
+   - Минимальный scope: JSON object + `lua{...}lua` string leaves + Lua syntax check.
 
-6. Добавить repair loop.
+6. Добавить critic decision layer.
    - Статус: pending.
-   - Минимальный scope: one repair attempt from structured validator report.
+   - Минимальный scope: choose finalize / repair / clarification from validator reports.
 
-7. Добавить metrics / regression suite.
+7. Добавить repair loop через prompter.
+   - Статус: pending.
+   - Минимальный scope: critic findings -> prompter repair prompt -> generator, max 4 generation passes.
+
+8. Добавить truncation guard на agentic stages.
+   - Статус: pending.
+   - Минимальный scope: если output ровно упёрся в `num_predict=256`, retry того же stage с "сделай короче".
+
+9. Добавить metrics / regression suite.
    - Статус: pending.
    - Минимальный scope: compare generator-only baseline vs validated pipeline on типовые запросы.
 
@@ -424,42 +542,44 @@ Debug должен показывать:
 
 Для следующего шага не нужно:
 
-- возвращать старый planner / prompter agent path;
 - возвращать весь старый `run_quality_loop(...)`;
 - чинить старый `_prepare_candidate_for_validation(...)`;
 - добавлять silent cleanup;
 - добавлять task-specific hacks для `emails`;
 - заставлять CLI парсить смысл задачи;
-- делать repair до появления validator reports.
+- делать repair до появления validator reports;
+- добавлять runtime behavioral validation до базовой deterministic validation.
 
 ## 11. Smallest Viable Next Slice
 
 Самый маленький полезный следующий шаг:
 
 ```text
-generator-only -> output_contract_validation -> response
+generator-only baseline -> planner -> prompter -> generator
 ```
 
 Минимальные файлы для чтения:
 
 - `apps/api/services/generation.py`
 - `packages/orchestrator/prompter.py`
+- `packages/orchestrator/planner.py`
 - `apps/api/schemas.py`
 - `apps/api/tests/test_quality_loop.py`
 
 Минимальные файлы для изменения:
 
-- новый или существующий validator module для output contract;
 - `apps/api/services/generation.py`;
+- `packages/orchestrator/planner.py`;
+- `packages/orchestrator/prompter.py`;
 - `apps/api/tests/test_quality_loop.py`;
 - при необходимости `apps/api/schemas.py`.
 
 Минимальное поведение:
 
-- валидный JSON object с `lua{...}lua` получает `validation_status = "passed"`;
-- markdown / prose / invalid JSON получает `validation_status = "failed"`;
-- debug показывает отдельный `output_contract_validation` stage;
-- raw model output не мутируется перед validation.
+- debug показывает `planner`, `prompter`, `generator`;
+- generator получает prompt от prompter, а не старый monolithic fallback prompt;
+- response пока может оставаться без full validation, если deterministic validation ещё не подключена в этом slice;
+- agentic stages имеют явный план для truncation guard, даже если сам guard добавляется следующим slice.
 
 ## 12. Operational Summary
 
@@ -472,7 +592,19 @@ generator-only -> output_contract_validation -> response
 Целевой следующий контур:
 
 ```text
-/generate -> generator -> output_contract_validation -> response_ready
+/generate -> planner -> prompter -> generator -> response_ready
 ```
 
-Полный новый pipeline нужно строить постепенно после этого, stage by stage.
+Целевой полный контур после следующих slices:
+
+```text
+/generate -> planner -> prompter -> generator -> deterministic_validation -> critic -> finalize
+```
+
+Repair ветка:
+
+```text
+critic -> prompter(repair) -> generator(repair) -> deterministic_validation -> critic
+```
+
+После 4 неудачных прогонов pipeline должен просить уточнение у пользователя, а не крутиться бесконечно.

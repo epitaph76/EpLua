@@ -210,6 +210,16 @@ def _build_repair_instructions(
             fallback,
         )
 
+    if finding.failure_class == "markdown_fence" and output_mode == "lowcode_json":
+        fallback = _localize_text(
+            "Return only a plain JSON object with lua{...}lua string values. Remove markdown fences and any surrounding explanation without changing the user goal.",
+            language,
+        )
+        return (
+            _localize_text("Remove markdown fences and keep the LowCode JSON lua{...}lua contract.", language),
+            fallback,
+        )
+
     if finding.failure_class == "markdown_fence" and output_mode == "raw_lua":
         fallback = _localize_text(
             "Return only raw Lua code. Remove markdown fences and any surrounding explanation without changing the user goal.",
@@ -634,6 +644,8 @@ _RU_TRANSLATIONS = {
     "Repair the candidate so its actual runtime result matches the task expectation. Return only the repaired result.": "Исправь кандидат так, чтобы его фактический runtime-результат соответствовал ожиданию задачи. Верни только исправленный результат.",
     "Remove markdown fences and keep the output in raw_lua mode.": "Убери markdown-ограждения и сохрани режим вывода raw_lua.",
     "Return only raw Lua code. Remove markdown fences and any surrounding explanation without changing the user goal.": "Верни только чистый Lua-код. Убери markdown-ограждения и любые пояснения вокруг, не меняя цель пользователя.",
+    "Remove markdown fences and keep the LowCode JSON lua{...}lua contract.": "Убери markdown-ограждения и сохрани LowCode JSON контракт lua{...}lua.",
+    "Return only a plain JSON object with lua{...}lua string values. Remove markdown fences and any surrounding explanation without changing the user goal.": "Верни только чистый JSON object со строками lua{...}lua. Убери markdown-ограждения и любые пояснения вокруг, не меняя цель пользователя.",
     "Wrap every generated code string with lua{...}lua without changing the JSON shape.": "Оберни каждую сгенерированную строку кода в lua{...}lua, не меняя форму JSON.",
     "Return the same JSON object shape, but ensure every generated code string uses lua{...}lua wrappers and contains no extra prose.": "Сохрани ту же форму JSON-объекта, но убедись, что каждая сгенерированная строка кода использует обёртку lua{...}lua и не содержит лишнего текста.",
     "Keep the same user goal, but restrict the candidate to the allowed wf.* data roots.": "Сохрани ту же цель пользователя, но ограничь кандидат разрешёнными корнями данных wf.*.",

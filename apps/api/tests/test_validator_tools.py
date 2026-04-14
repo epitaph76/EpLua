@@ -31,6 +31,21 @@ def test_validate_syntax_uses_stylua_when_available(monkeypatch: pytest.MonkeyPa
     assert "--check" in commands[0]
 
 
+def test_lowcode_json_format_requires_lua_wrapped_string_leaves() -> None:
+    report = core.validate_format('{"result":"lua{return wf.vars.emails[#wf.vars.emails]}lua"}', core.LOWCODE_JSON)
+
+    assert report.status == "pass"
+    assert report.normalized_candidate == '{"result":"lua{return wf.vars.emails[#wf.vars.emails]}lua"}'
+
+    non_string_report = core.validate_format('{"result":123}', core.LOWCODE_JSON)
+    assert non_string_report.status == "fail"
+    assert non_string_report.findings[0].failure_class == "non_string_lua_value"
+
+    unwrapped_report = core.validate_format('{"raw_lua":{"value":"return wf.vars.emails[#wf.vars.emails]"}}', core.LOWCODE_JSON)
+    assert unwrapped_report.status == "fail"
+    assert unwrapped_report.findings[0].failure_class == "invalid_wrapper"
+
+
 def test_validate_syntax_surfaces_stylua_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(core, "_resolve_tool_binary", lambda env_var, default: "stylua")
 

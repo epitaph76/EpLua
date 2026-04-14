@@ -205,6 +205,61 @@ def build_planner_agent_prompt(
     )
 
 
+def build_lowcode_planner_agent_prompt(
+    *,
+    task_text: str,
+    provided_context: str | None,
+    fallback_result: PlannerResult,
+) -> AgentPrompt:
+    system_prompt = "\n".join(
+        [
+            "Ты planner-агент validation pipeline для luaMTS.",
+            "Не генерируй Lua-код.",
+            "Верни только один компактный JSON object без markdown и пояснений.",
+            "Используй короткие ключи, чтобы уложиться в небольшой num_predict budget.",
+            "Карта ключей: arch=archetype, op=operation, mode=output_mode, roots=input_roots, shape=expected_shape, risks=risk_tags, edges=edge_cases, intents=task_intents, clar=clarification_required, q=clarification_question.",
+            "Выбери семантику задачи: arch, op, mode, shape, intents, risks и clar.",
+            "Детерминированный fallback используй только как факты о языке, корнях context и безопасных defaults.",
+            "Если explicit_archetype=true, сохрани переданный archetype.",
+            "Если explicit_output_mode=true, сохрани переданный output_mode.",
+            "Форма ответа:",
+            '{"arch":"simple_extraction","op":"last_array_item","mode":"raw_lua","roots":["wf.vars.emails"],"shape":"scalar_or_nil","risks":["array_indexing"],"edges":["single_item","empty_array"],"clar":false,"q":null,"intents":[]}',
+        ]
+    )
+    user_prompt = "\n".join(
+        [
+            "Задача:",
+            task_text,
+            "Фрагмент контекста:",
+            _compact_context_excerpt(provided_context),
+            "Факты:",
+            json.dumps(
+                {
+                    "lang": fallback_result.language,
+                    "archetype": fallback_result.task_spec.archetype,
+                    "mode": fallback_result.task_spec.output_mode,
+                    "output_mode": fallback_result.task_spec.output_mode,
+                    "roots": list(fallback_result.input_roots),
+                    "explicit_roots": fallback_result.explicit_input_basis,
+                    "explicit_input_basis": fallback_result.explicit_input_basis,
+                    "explicit_archetype": fallback_result.explicit_archetype,
+                    "explicit_output_mode": fallback_result.explicit_output_mode,
+                    "risks": list(fallback_result.task_spec.risk_tags),
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+        ]
+    )
+    return AgentPrompt(
+        agent_name="planner",
+        messages=(
+            AgentMessage(role="system", content=system_prompt),
+            AgentMessage(role="user", content=user_prompt),
+        ),
+    )
+
+
 def apply_planner_agent_response(
     raw_response: str,
     fallback_result: PlannerResult,

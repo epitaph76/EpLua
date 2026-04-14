@@ -1,5 +1,6 @@
 import json
 import re
+from pathlib import Path
 
 from packages.orchestrator.agent_prompt import AgentPrompt
 from packages.orchestrator import repair_loop
@@ -8,6 +9,7 @@ from packages.orchestrator.planner import apply_planner_agent_response, plan_tas
 from packages.orchestrator.repair_loop import _detect_repair_oscillation, run_quality_loop
 from packages.shared.language import DEFAULT_LANGUAGE
 from packages.shared.quality import ValidatorReport
+from services import generation as generation_module
 from services.generation import GenerationService
 
 
@@ -191,6 +193,54 @@ class CompactAgentProtocolModelAdapter(ScriptedModelAdapter):
         if agent_prompt.agent_name == "prompter":
             return '{"sys":["Return the last array item, not the whole array."],"user":["Use wf.vars.emails[#wf.vars.emails]."]}'
         return self._next_response()
+
+
+class RussianPrompterPatchModelAdapter(ScriptedModelAdapter):
+    def generate_from_agent(self, agent_prompt: AgentPrompt) -> str:
+        self.agent_calls.append(
+            {
+                "agent": agent_prompt.agent_name,
+                "messages": agent_prompt.to_messages_payload(),
+                "legacy_prompt": agent_prompt.to_legacy_prompt(),
+            }
+        )
+        if agent_prompt.agent_name == "planner":
+            return json.dumps(
+                {
+                    "arch": "simple_extraction",
+                    "op": "last_array_item",
+                    "mode": "raw_lua",
+                    "roots": ["wf.vars.emails"],
+                    "shape": "scalar_or_nil",
+                    "risks": ["array_indexing", "empty_array"],
+                    "edges": ["single_item", "empty_array"],
+                    "clar": False,
+                    "q": None,
+                    "intents": [],
+                },
+                ensure_ascii=False,
+            )
+        if agent_prompt.agent_name == "prompter":
+            return json.dumps(
+                {
+                    "sys": ["Учитывай TaskSpec: нужно вернуть последний элемент массива, а не весь массив."],
+                    "user": ["Используй Lua-индексацию wf.vars.emails[#wf.vars.emails]."],
+                },
+                ensure_ascii=False,
+            )
+        return self._next_response()
+
+
+class TruncatedGeneratorContinuationModelAdapter(RussianPrompterPatchModelAdapter):
+    def __init__(self, payloads: list[dict[str, object]]) -> None:
+        super().__init__([])
+        self._payloads = payloads
+
+    def generate_from_prompt_with_metadata(self, prompt: str) -> dict[str, object]:
+        self.prompts.append(prompt)
+        if not self._payloads:
+            raise AssertionError("No scripted metadata payloads left for the model adapter.")
+        return self._payloads.pop(0)
 
 
 class TransformationArrayItemPlannerModelAdapter(ScriptedModelAdapter):
@@ -388,10 +438,10 @@ def test_planner_agent_accepts_compact_response_keys() -> None:
     assert result.task_spec.edge_cases == ("empty_array",)
 
 
-def test_generation_service_uses_generator_only_lowcode_contract_without_agentic_layers() -> None:
-    model_adapter = ScriptedModelAdapter(
+def test_generation_service_adds_russian_prompter_context_to_lowcode_generator_prompt() -> None:
+    model_adapter = RussianPrompterPatchModelAdapter(
         [
-            "```lua\nreturn wf.vars.emails[#wf.vars.emails]\n```",
+            '{"result":"lua{return wf.vars.emails[#wf.vars.emails]}lua"}',
         ]
     )
     service = GenerationService(model_adapter=model_adapter)
@@ -417,28 +467,33 @@ def test_generation_service_uses_generator_only_lowcode_contract_without_agentic
         debug=True,
     )
 
-    assert result["code"] == "```lua\nreturn wf.vars.emails[#wf.vars.emails]\n```"
-    assert result["validation_status"] == "not_run"
-    assert result["stop_reason"] == "not_run"
+    assert result["code"] == '{"result":"lua{return wf.vars.emails[#wf.vars.emails]}lua"}'
+    assert result["validation_status"] == "passed"
+    assert result["stop_reason"] == "passed"
     assert result["trace"] == [
         "request_received",
+        "planner",
+        "prompter",
         "generation",
+        "deterministic_validation",
         "response_ready",
     ]
-    assert result["validator_report"] is None
-    assert result["critic_report"] is None
+    assert result["validator_report"]["status"] == "pass"
+    assert result["critic_report"]["action"] == "finalize"
+    assert result["critic_report"]["failure_class"] is None
     assert result["repair_count"] == 0
     assert result["clarification_count"] == 0
     assert result["output_mode"] == "raw_lua"
     assert result["archetype"] == "simple_extraction"
-    assert model_adapter.agent_calls == []
+    assert [call["agent"] for call in model_adapter.agent_calls] == ["planner", "prompter"]
     assert len(model_adapter.prompts) == 1
 
     debug = result["debug"]
     assert debug is not None
     generator_prompt = model_adapter.prompts[0]
     assert debug["prompt_package"]["prompt"] == generator_prompt
-    assert "agent_prompt" not in debug["prompt_package"]
+    assert debug["prompt_package"]["planner_result"]["source"] == "agent"
+    assert debug["prompt_package"]["prompt_builder_result"]["source"] == "agent_patch"
     assert "Ты генерируешь Lua 5.5 выражения/скрипты для LowCode." in generator_prompt
     assert "Верни только JSON object." in generator_prompt
     assert "Каждое значение, которое содержит Lua, должно быть строкой в формате lua{<Lua код>}lua." in generator_prompt
@@ -453,13 +508,19 @@ def test_generation_service_uses_generator_only_lowcode_contract_without_agentic
     assert "USER:" not in generator_prompt
     assert "Task archetype:" not in generator_prompt
     assert "Mode-specific rules:" not in generator_prompt
+    assert "Дополнения prompter-агента:" in generator_prompt
+    assert "Учитывай TaskSpec: нужно вернуть последний элемент массива, а не весь массив." in generator_prompt
+    assert "Используй Lua-индексацию wf.vars.emails[#wf.vars.emails]." in generator_prompt
     assert "Prompter agent additions:" not in generator_prompt
     assert "Risk hints:" not in generator_prompt
-    assert "План:" not in generator_prompt
+    assert "План:" in generator_prompt
     assert [layer["stage"] for layer in debug["pipeline_layers"]] == [
+        "planner",
+        "prompter",
         "generator",
+        "deterministic_validation",
     ]
-    assert debug["agent_layer_calls"] == []
+    assert [call["phase"] for call in debug["agent_layer_calls"]] == ["planner", "prompter"]
     assert debug["model_calls"] == [
         {
             "phase": "generation",
@@ -468,7 +529,283 @@ def test_generation_service_uses_generator_only_lowcode_contract_without_agentic
             "raw_response": result["code"],
         }
     ]
-    assert debug["validation_passes"] == []
+    assert debug["validation_passes"][0]["format_report"]["status"] == "pass"
+    assert debug["validation_passes"][0]["syntax_report"]["status"] == "pass"
+    assert debug["validation_passes"][0]["rule_report"]["status"] == "pass"
+
+
+def test_generation_service_continues_truncated_generator_output_before_validation(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    partial_candidate = '{"result":"lua{return wf.vars.em'
+    tail_candidate = 'ails[#wf.vars.emails]}lua"}'
+    full_candidate = partial_candidate + tail_candidate
+    created_temp_paths: list[Path] = []
+    validation_temp_exists: list[list[bool]] = []
+    debug_temp_exists: list[list[bool]] = []
+
+    def fake_named_temporary_file(
+        mode: str = "w+b",
+        *_args: object,
+        encoding: str | None = None,
+        delete: bool = True,
+        prefix: str | None = None,
+        suffix: str | None = None,
+        **_kwargs: object,
+    ):
+        assert delete is False
+        temp_path = tmp_path / f"{prefix or 'candidate_'}{len(created_temp_paths)}{suffix or '.tmp'}"
+        created_temp_paths.append(temp_path)
+        return temp_path.open(mode, encoding=encoding)
+
+    monkeypatch.setattr(generation_module.tempfile, "NamedTemporaryFile", fake_named_temporary_file)
+    real_run_validation_pipeline = generation_module.run_validation_pipeline
+
+    def recording_run_validation_pipeline(candidate: str, **kwargs: object):
+        validation_temp_exists.append([temp_path.exists() for temp_path in created_temp_paths])
+        return real_run_validation_pipeline(candidate, **kwargs)
+
+    monkeypatch.setattr(generation_module, "run_validation_pipeline", recording_run_validation_pipeline)
+    model_adapter = TruncatedGeneratorContinuationModelAdapter(
+        [
+            {
+                "response": partial_candidate,
+                "eval_count": 256,
+                "num_predict": 256,
+            },
+            {
+                "response": tail_candidate,
+                "eval_count": 24,
+                "num_predict": 256,
+            },
+        ]
+    )
+    service = GenerationService(model_adapter=model_adapter)
+    real_build_debug_payload = service._build_debug_payload
+
+    def recording_build_debug_payload(*args: object, **kwargs: object):
+        debug_temp_exists.append([temp_path.exists() for temp_path in created_temp_paths])
+        return real_build_debug_payload(*args, **kwargs)
+
+    monkeypatch.setattr(service, "_build_debug_payload", recording_build_debug_payload)
+
+    result = service.generate(
+        task_text="Get the last email from the list.",
+        provided_context='{"wf":{"vars":{"emails":["user1@example.com","user2@example.com"]}}}',
+        archetype="simple_extraction",
+        output_mode="raw_lua",
+        input_roots=["wf.vars.emails"],
+        risk_tags=["array_indexing", "empty_array"],
+        debug=True,
+    )
+
+    assert result["code"] == full_candidate
+    assert result["validation_status"] == "passed"
+    assert len(model_adapter.prompts) == 2
+    assert partial_candidate in model_adapter.prompts[1]
+    assert "лимит вывода" in model_adapter.prompts[1]
+    assert validation_temp_exists[-1] == [True]
+    assert debug_temp_exists[-1] == [True]
+    assert all(not temp_path.exists() for temp_path in created_temp_paths)
+    debug = result["debug"]
+    assert debug is not None
+    assert debug["model_calls"][0]["raw_response"] == full_candidate
+    assert debug["model_calls"][0]["truncation_guard"]["continuation_count"] == 1
+    assert debug["validation_passes"][0]["candidate"] == full_candidate
+
+
+def test_generation_service_creates_temp_file_for_short_generator_output_until_final_status(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    candidate = '{"result":"lua{return wf.vars.emails[#wf.vars.emails]}lua"}'
+    created_temp_paths: list[Path] = []
+    debug_temp_exists: list[list[bool]] = []
+
+    def fake_named_temporary_file(
+        mode: str = "w+b",
+        *_args: object,
+        encoding: str | None = None,
+        delete: bool = True,
+        prefix: str | None = None,
+        suffix: str | None = None,
+        **_kwargs: object,
+    ):
+        assert delete is False
+        temp_path = tmp_path / f"{prefix or 'candidate_'}{len(created_temp_paths)}{suffix or '.tmp'}"
+        created_temp_paths.append(temp_path)
+        return temp_path.open(mode, encoding=encoding)
+
+    monkeypatch.setattr(generation_module.tempfile, "NamedTemporaryFile", fake_named_temporary_file)
+    model_adapter = TruncatedGeneratorContinuationModelAdapter(
+        [
+            {
+                "response": candidate,
+                "eval_count": 24,
+                "num_predict": 256,
+            },
+        ]
+    )
+    service = GenerationService(model_adapter=model_adapter)
+    real_build_debug_payload = service._build_debug_payload
+
+    def recording_build_debug_payload(*args: object, **kwargs: object):
+        debug_temp_exists.append([temp_path.exists() for temp_path in created_temp_paths])
+        return real_build_debug_payload(*args, **kwargs)
+
+    monkeypatch.setattr(service, "_build_debug_payload", recording_build_debug_payload)
+
+    result = service.generate(
+        task_text="Get the last email from the list.",
+        provided_context='{"wf":{"vars":{"emails":["user1@example.com","user2@example.com"]}}}',
+        archetype="simple_extraction",
+        output_mode="raw_lua",
+        input_roots=["wf.vars.emails"],
+        risk_tags=["array_indexing", "empty_array"],
+        debug=True,
+    )
+
+    assert result["code"] == candidate
+    assert result["validation_status"] == "passed"
+    assert len(created_temp_paths) == 1
+    assert debug_temp_exists[-1] == [True]
+    assert all(not temp_path.exists() for temp_path in created_temp_paths)
+
+
+def test_generation_service_stops_after_bounded_invalid_lowcode_json_repairs() -> None:
+    invalid_candidate = "\n".join(
+        [
+            "```json",
+            "{",
+            '  "raw_lua": {',
+            '    "value": "',
+            "      local emails = wf.vars.emails",
+            "      if emails and #emails > 0 then",
+            "        return emails[#emails]",
+            "      else",
+            "        return nil",
+            "      end",
+            '    "',
+            "  }",
+            "}",
+            "```",
+        ]
+    )
+    model_adapter = RussianPrompterPatchModelAdapter([invalid_candidate] * 2)
+    service = GenerationService(model_adapter=model_adapter)
+
+    result = service.generate(
+        task_text="Из полученного json списка email получи последний.",
+        provided_context=json.dumps(
+            {
+                "wf": {
+                    "vars": {
+                        "emails": [
+                            "user1@example.com",
+                            "user2@example.com",
+                            "user3@example.com",
+                        ]
+                    }
+                }
+            }
+        ),
+        archetype="simple_extraction",
+        output_mode="raw_lua",
+        input_roots=["wf.vars.emails"],
+        risk_tags=["array_indexing", "empty_array"],
+        debug=True,
+    )
+
+    assert result["validation_status"] == "failed"
+    assert result["stop_reason"] == "repair_exhausted"
+    assert result["trace"][:5] == [
+        "request_received",
+        "planner",
+        "prompter",
+        "generation",
+        "deterministic_validation",
+    ]
+    assert result["trace"].count("repair_prompter") == 0
+    assert result["trace"].count("repair_generation") == 1
+    assert result["trace"][-1] == "response_ready"
+    assert result["repair_count"] == 1
+    assert result["code"].startswith("```json")
+    assert result["validator_report"]["status"] == "fail"
+    assert result["critic_report"]["action"] == "repair"
+    assert result["critic_report"]["failure_class"] == "markdown_fence"
+    assert "repair_prompt" in result["critic_report"]
+    assert len(result["validator_report"]["iterations"]) == 2
+    first_iteration = result["validator_report"]["iterations"][0]
+    assert first_iteration["format_report"]["status"] == "fail"
+    assert first_iteration["format_report"]["findings"][0]["failure_class"] == "markdown_fence"
+    assert first_iteration["syntax_report"]["status"] == "skipped"
+    debug = result["debug"]
+    assert debug is not None
+    assert debug["validation_passes"][0]["candidate"] == result["code"]
+    assert debug["validation_passes"][0]["format_report"]["findings"][0]["failure_class"] == "markdown_fence"
+
+
+def test_generation_service_repairs_invalid_lowcode_json_contract_directly_with_generator() -> None:
+    invalid_candidate = "\n".join(
+        [
+            "```json",
+            "{",
+            '  "raw_lua": {',
+            '    "value": "return wf.vars.emails[#wf.vars.emails]"',
+            "  }",
+            "}",
+            "```",
+        ]
+    )
+    repaired_candidate = '{"result":"lua{return wf.vars.emails[#wf.vars.emails]}lua"}'
+    model_adapter = RussianPrompterPatchModelAdapter([invalid_candidate, repaired_candidate])
+    service = GenerationService(model_adapter=model_adapter)
+
+    result = service.generate(
+        task_text="Из полученного json списка email получи последний.",
+        provided_context=json.dumps(
+            {
+                "wf": {
+                    "vars": {
+                        "emails": [
+                            "user1@example.com",
+                            "user2@example.com",
+                            "user3@example.com",
+                        ]
+                    }
+                }
+            }
+        ),
+        archetype="simple_extraction",
+        output_mode="raw_lua",
+        input_roots=["wf.vars.emails"],
+        risk_tags=["array_indexing", "empty_array"],
+        debug=True,
+    )
+
+    assert result["code"] == repaired_candidate
+    assert result["validation_status"] == "repaired"
+    assert result["stop_reason"] == "passed"
+    assert result["repair_count"] == 1
+    assert result["validator_report"]["status"] == "pass"
+    assert [iteration["format_report"]["status"] for iteration in result["validator_report"]["iterations"]] == [
+        "fail",
+        "pass",
+    ]
+    assert result["critic_report"]["action"] == "finalize"
+    assert "repair_prompter" not in result["trace"]
+    assert "repair_generation" in result["trace"]
+    assert [call["agent"] for call in model_adapter.agent_calls] == ["planner", "prompter"]
+
+    debug = result["debug"]
+    assert debug is not None
+    assert [call["phase"] for call in debug["model_calls"]] == ["generation", "repair_generation"]
+    assert [call["phase"] for call in debug["agent_layer_calls"]] == ["planner", "prompter"]
+    assert "Текущий невалидный candidate:" in debug["model_calls"][1]["prompt"]
+    assert "Инструкция critic:" in debug["model_calls"][1]["prompt"]
+    assert debug["validation_passes"][0]["format_report"]["findings"][0]["failure_class"] == "markdown_fence"
+    assert debug["validation_passes"][1]["format_report"]["status"] == "pass"
 
 
 def test_generation_service_auto_normalizes_fenced_raw_lua_before_repair_budget() -> None:

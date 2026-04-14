@@ -12,13 +12,63 @@ from packages.shared.quality import ValidationBundle
 from packages.shared.language import natural_language_name
 
 LOWCODE_LUA_EXPECTED_RESULT_FORMAT = "Верни только JSON object. Каждое значение, которое содержит Lua, должно быть строкой в формате lua{<Lua код>}lua."
+LOWCODE_LUA_FORBIDDEN_PATTERNS = (
+    "markdown",
+    "пояснения вне JSON object",
+    "print/debug output",
+    "JsonPath",
+)
 
 
 def build_lowcode_generator_prompt(task_text: str, provided_context: str | None = None) -> str:
-    sections = [_lowcode_lua_system_prompt(), "Задача:", task_text]
-    if provided_context:
-        sections.extend(["", "Контекст:", provided_context])
-    return "\n".join(sections)
+    return render_lowcode_generator_prompt(
+        build_lowcode_generator_agent_prompt(
+            task_text=task_text,
+            provided_context=provided_context,
+            planner_result=None,
+        )
+    )
+
+
+def build_lowcode_prompt_builder_result(
+    *,
+    task_text: str,
+    provided_context: str | None,
+    planner_result: PlannerResult | None,
+) -> PromptBuilderResult:
+    return PromptBuilderResult(
+        agent_prompt=build_lowcode_generator_agent_prompt(
+            task_text=task_text,
+            provided_context=provided_context,
+            planner_result=planner_result,
+        ),
+        expected_result_format=LOWCODE_LUA_EXPECTED_RESULT_FORMAT,
+        forbidden_patterns=LOWCODE_LUA_FORBIDDEN_PATTERNS,
+        retrieval_pack=RetrievalPack(examples=tuple(), archetype_template=None, format_rules=None),
+    )
+
+
+def build_lowcode_generator_agent_prompt(
+    *,
+    task_text: str,
+    provided_context: str | None,
+    planner_result: PlannerResult | None,
+) -> AgentPrompt:
+    system_sections = [_lowcode_lua_system_prompt()]
+    if planner_result is not None:
+        system_sections.extend(["", "План:", _format_lowcode_task_plan(planner_result)])
+
+    return AgentPrompt(
+        agent_name="generator",
+        messages=(
+            AgentMessage(role="system", content="\n".join(system_sections).strip()),
+            AgentMessage(role="user", content=_lowcode_lua_user_prompt(task_text, provided_context)),
+        ),
+    )
+
+
+def render_lowcode_generator_prompt(agent_prompt: AgentPrompt) -> str:
+    return "\n".join(message.content for message in agent_prompt.messages if message.content.strip()).strip()
 
 
 @dataclass(frozen=True)
@@ -171,6 +221,150 @@ def build_prompter_agent_prompt(
     )
 
 
+def build_lowcode_prompter_agent_prompt(
+    *,
+    task_text: str,
+    provided_context: str | None,
+    planner_result: PlannerResult,
+    fallback_result: PromptBuilderResult,
+) -> AgentPrompt:
+    system_prompt = "\n".join(
+        [
+            "Ты prompter-агент validation pipeline для luaMTS.",
+            "Не генерируй Lua-код.",
+            "Верни только один компактный JSON object без markdown и пояснений.",
+            "Текущий generator prompt уже содержит жёсткий LowCode-контракт, ограничения и формат ответа.",
+            "Не переписывай и не повторяй полный generator prompt.",
+            "Верни только короткие добавления, которые помогут generator точнее решить задачу.",
+            "Пиши добавления на русском языке.",
+            'Форма ответа: {"sys":["короткая системная подсказка"],"user":["короткая пользовательская подсказка"]}',
+        ]
+    )
+    user_prompt = "\n".join(
+        [
+            "TaskSpec:",
+            json.dumps(planner_result.task_spec.to_dict(), ensure_ascii=False, separators=(",", ":")),
+            "Task intents:",
+            json.dumps(list(planner_result.task_intents), ensure_ascii=False, separators=(",", ":")),
+            "Задача пользователя:",
+            task_text,
+            "Фрагмент контекста:",
+            _compact_context_excerpt(provided_context),
+            "Сводка текущего generator prompt:",
+            json.dumps(_prompt_builder_summary(fallback_result), ensure_ascii=False, separators=(",", ":")),
+            "Верни только добавления; полный generator prompt будет собран локально.",
+        ]
+    )
+    return AgentPrompt(
+        agent_name="prompter",
+        messages=(
+            AgentMessage(role="system", content=system_prompt),
+            AgentMessage(role="user", content=user_prompt),
+        ),
+    )
+
+
+def build_lowcode_repair_prompt_builder_result(
+    *,
+    original_result: PromptBuilderResult,
+    current_candidate: str,
+    repair_instruction: str,
+    validation_pass: dict[str, object],
+    repair_count: int,
+) -> PromptBuilderResult:
+    messages = original_result.agent_prompt.messages
+    if len(messages) < 2:
+        return _prompter_fallback(original_result, "repair_missing_generator_messages")
+
+    system_message = "\n".join(
+        [
+            messages[0].content,
+            "",
+            "Итерация исправления:",
+            _format_list(
+                [
+                    f"номер repair iteration: {repair_count}",
+                    "исправь только замечания validator-а и critic-а;",
+                    "сохрани LowCode JSON contract: только JSON object со строками lua{...}lua;",
+                    "не добавляй markdown, пояснения, debug output или текст вокруг JSON object.",
+                ]
+            ),
+        ]
+    )
+    user_message = "\n".join(
+        [
+            messages[1].content,
+            "",
+            "Текущий невалидный candidate:",
+            current_candidate,
+            "Краткий validation report:",
+            json.dumps(_compact_validation_pass_for_repair(validation_pass), ensure_ascii=False, separators=(",", ":")),
+            "Инструкция critic:",
+            repair_instruction,
+        ]
+    )
+    return PromptBuilderResult(
+        agent_prompt=AgentPrompt(
+            agent_name="generator",
+            messages=(
+                AgentMessage(role="system", content=system_message.strip()),
+                AgentMessage(role="user", content=user_message.strip()),
+            ),
+        ),
+        expected_result_format=original_result.expected_result_format,
+        forbidden_patterns=original_result.forbidden_patterns,
+        retrieval_pack=original_result.retrieval_pack,
+        source="deterministic_repair_fallback",
+    )
+
+
+def build_lowcode_repair_prompter_agent_prompt(
+    *,
+    planner_result: PlannerResult,
+    current_candidate: str,
+    repair_instruction: str,
+    validation_pass: dict[str, object],
+    repair_count: int,
+    fallback_result: PromptBuilderResult,
+) -> AgentPrompt:
+    system_prompt = "\n".join(
+        [
+            "Ты prompter-агент repair iteration для luaMTS validation pipeline.",
+            "Не генерируй Lua-код.",
+            "Верни только один компактный JSON object без markdown и пояснений.",
+            "Текущий generator prompt уже содержит жёсткий LowCode-контракт.",
+            "Не переписывай и не повторяй полный generator prompt.",
+            "Верни только короткие добавления, которые помогут generator исправить ровно найденную ошибку.",
+            "Пиши добавления на русском языке.",
+            'Форма ответа: {"sys":["короткая системная подсказка"],"user":["короткая пользовательская подсказка"]}',
+        ]
+    )
+    user_prompt = "\n".join(
+        [
+            "Repair iteration:",
+            str(repair_count),
+            "TaskSpec:",
+            json.dumps(planner_result.task_spec.to_dict(), ensure_ascii=False, separators=(",", ":")),
+            "Текущий candidate:",
+            current_candidate,
+            "Краткий validation report:",
+            json.dumps(_compact_validation_pass_for_repair(validation_pass), ensure_ascii=False, separators=(",", ":")),
+            "Инструкция critic:",
+            repair_instruction,
+            "Сводка fallback prompt:",
+            json.dumps(_prompt_builder_summary(fallback_result), ensure_ascii=False, separators=(",", ":")),
+            "Верни только добавления; полный repair generator prompt будет собран локально.",
+        ]
+    )
+    return AgentPrompt(
+        agent_name="prompter",
+        messages=(
+            AgentMessage(role="system", content=system_prompt),
+            AgentMessage(role="user", content=user_prompt),
+        ),
+    )
+
+
 def build_repair_prompter_agent_prompt(
     *,
     original_generator_prompt: AgentPrompt,
@@ -263,6 +457,21 @@ def apply_prompter_agent_response(
     )
 
 
+def apply_lowcode_prompter_agent_response(
+    raw_response: str,
+    fallback_result: PromptBuilderResult,
+) -> PromptBuilderResult:
+    payload = _extract_json_payload(raw_response)
+    if payload is None:
+        return _prompter_fallback(fallback_result, "prompter_invalid_json")
+
+    patch_result = _apply_prompt_patch_payload(payload, fallback_result)
+    if patch_result is not None:
+        return patch_result
+
+    return _prompter_fallback(fallback_result, "prompter_missing_patch_additions")
+
+
 def _apply_prompt_patch_payload(
     payload: dict[str, Any],
     fallback_result: PromptBuilderResult,
@@ -279,9 +488,9 @@ def _apply_prompt_patch_payload(
     system_message = fallback_messages[0].content
     user_message = fallback_messages[1].content
     if system_additions:
-        system_message = "\n".join([system_message, "Prompter agent additions:", _format_list(system_additions)])
+        system_message = "\n".join([system_message, "Дополнения prompter-агента:", _format_list(system_additions)])
     if user_additions:
-        user_message = "\n".join([user_message, "Prompter agent additions:", _format_list(user_additions)])
+        user_message = "\n".join([user_message, "Дополнения prompter-агента:", _format_list(user_additions)])
 
     return PromptBuilderResult(
         agent_prompt=AgentPrompt(
@@ -374,6 +583,47 @@ def _validation_bundle_summary(validation_bundle: ValidationBundle) -> dict[str,
     }
 
 
+def _compact_validation_pass_for_repair(validation_pass: dict[str, object]) -> dict[str, object]:
+    return {
+        "phase": validation_pass.get("phase"),
+        "format": _compact_report_dict(validation_pass.get("format_report")),
+        "syntax": _compact_report_dict(validation_pass.get("syntax_report")),
+        "static": _compact_report_dict(validation_pass.get("static_report")),
+        "principle": _compact_report_dict(validation_pass.get("principle_report")),
+        "rule": _compact_report_dict(validation_pass.get("rule_report")),
+        "critic": _compact_critic_dict(validation_pass.get("critic_report")),
+    }
+
+
+def _compact_report_dict(report: object) -> dict[str, object]:
+    if not isinstance(report, dict):
+        return {"status": "unknown", "findings": []}
+    return {
+        "status": report.get("status"),
+        "findings": [
+            {
+                "failure_class": finding.get("failure_class"),
+                "location": finding.get("location"),
+                "message": finding.get("message"),
+                "suggestion": finding.get("suggestion"),
+            }
+            for finding in report.get("findings", [])
+            if isinstance(finding, dict)
+        ][:3],
+    }
+
+
+def _compact_critic_dict(report: object) -> dict[str, object]:
+    if not isinstance(report, dict):
+        return {"action": "unknown"}
+    return {
+        "action": report.get("action"),
+        "failure_class": report.get("failure_class"),
+        "message": report.get("message"),
+        "repair_prompt": report.get("repair_prompt"),
+    }
+
+
 def _first_findings_summary(*reports: Any) -> list[dict[str, object]]:
     findings: list[dict[str, object]] = []
     for report in reports:
@@ -407,6 +657,31 @@ def _format_task_spec(task_spec: TaskSpec) -> str:
     if task_spec.clarification_required and task_spec.clarification_question:
         lines.append(f"- clarification_question: {task_spec.clarification_question}")
     return "\n".join(lines)
+
+
+def _format_lowcode_task_plan(planner_result: PlannerResult) -> str:
+    task_spec = planner_result.task_spec
+    lines = [
+        f"- операция: {task_spec.operation}",
+        f"- режим ответа: {task_spec.output_mode}",
+        f"- ожидаемая форма: {task_spec.expected_shape}",
+        f"- входные корни: {', '.join(task_spec.input_roots) if task_spec.input_roots else 'не указаны явно'}",
+        f"- риски: {', '.join(task_spec.risk_tags) if task_spec.risk_tags else 'нет'}",
+    ]
+    if task_spec.edge_cases:
+        lines.append(f"- пограничные случаи: {', '.join(task_spec.edge_cases)}")
+    if planner_result.task_intents:
+        lines.append(f"- намерения задачи: {', '.join(planner_result.task_intents)}")
+    if task_spec.clarification_required and task_spec.clarification_question:
+        lines.append(f"- нужен вопрос пользователю: {task_spec.clarification_question}")
+    return "\n".join(lines)
+
+
+def _lowcode_lua_user_prompt(task_text: str, provided_context: str | None) -> str:
+    sections = ["Задача:", task_text]
+    if provided_context:
+        sections.extend(["", "Контекст:", provided_context])
+    return "\n".join(sections)
 
 
 def _lowcode_lua_system_prompt() -> str:

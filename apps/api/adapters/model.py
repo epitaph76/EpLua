@@ -128,6 +128,39 @@ class OllamaModelAdapter:
                 message="Local model response was invalid.",
             ) from exc
 
+    def generate_from_prompt_with_metadata(self, prompt: str) -> dict[str, object]:
+        try:
+            payload = self._prompt_completion_payload(prompt)
+            return {
+                "response": str(payload["response"]),
+                "eval_count": payload.get("eval_count"),
+                "num_predict": self._runtime_options.num_predict,
+            }
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 503:
+                return {
+                    "response": self._generate_via_cli(prompt),
+                    "eval_count": None,
+                    "num_predict": self._runtime_options.num_predict,
+                }
+            raise ApiError(
+                status_code=502,
+                code="model_error",
+                message="Local model request failed.",
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise ApiError(
+                status_code=502,
+                code="model_error",
+                message="Local model request failed.",
+            ) from exc
+        except KeyError as exc:
+            raise ApiError(
+                status_code=502,
+                code="model_error",
+                message="Local model response was invalid.",
+            ) from exc
+
     def _prompt_completion_payload(self, prompt: str) -> dict[str, object]:
         response = self._http_client.post(
             f"{self._base_url}/api/generate",

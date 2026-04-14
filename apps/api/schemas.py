@@ -8,6 +8,7 @@ class RuntimeOptionsRequest(BaseModel):
     num_predict: int = Field(gt=0)
     batch: int = Field(gt=0)
     temperature: float = Field(default=0.8, ge=0)
+    num_gpu: int | None = None
 
 
 class GenerateRequest(BaseModel):
@@ -23,6 +24,7 @@ class GenerateRequest(BaseModel):
     runtime_options: RuntimeOptionsRequest | None = None
     allow_cloud_model: bool = False
     language: Literal["ru", "en"] = "ru"
+    repair_budget: int = Field(default=2, gt=0)
 
 
 class GenerateResponse(BaseModel):

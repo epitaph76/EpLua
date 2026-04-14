@@ -53,6 +53,36 @@ class SequencedHttpClient(RecordingHttpClient):
         return FakeResponse(self._responses.pop(0))
 
 
+class StreamingHttpClient(RecordingHttpClient):
+    def __init__(self, lines: list[str]) -> None:
+        super().__init__()
+        self._lines = lines
+        self.streams: list[dict[str, object]] = []
+
+    def stream(self, method: str, url: str, json: dict[str, object], timeout: float):
+        self.streams.append({"method": method, "url": url, "json": json, "timeout": timeout})
+        return StreamingResponse(self._lines)
+
+
+class StreamingResponse:
+    status_code = 200
+
+    def __init__(self, lines: list[str]) -> None:
+        self._lines = lines
+
+    def __enter__(self) -> "StreamingResponse":
+        return self
+
+    def __exit__(self, *_exc_info: object) -> None:
+        return None
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def iter_lines(self):
+        yield from self._lines
+
+
 def test_cli_literal_print_preserves_lua_length_index_markup() -> None:
     class RecordingConsole:
         def __init__(self) -> None:
@@ -67,6 +97,23 @@ def test_cli_literal_print_preserves_lua_length_index_markup() -> None:
 
     assert console.calls == [
         (("return wf.vars.emails[#wf.vars.emails]",), {"markup": False})
+    ]
+
+
+def test_cli_literal_print_renders_escaped_newlines_as_lines() -> None:
+    class RecordingConsole:
+        def __init__(self) -> None:
+            self.calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+        def print(self, *objects: object, **kwargs: object) -> None:
+            self.calls.append((objects, kwargs))
+
+    console = RecordingConsole()
+
+    cli_main._print_literal(console, "lua{local emails = wf.vars.emails\\nreturn emails[#emails]}lua")
+
+    assert console.calls == [
+        (("lua{local emails = wf.vars.emails\nreturn emails[#emails]}lua",), {"markup": False})
     ]
 
 
@@ -99,11 +146,57 @@ def test_cli_generate_release_calls_api_and_writes_report(tmp_path, monkeypatch,
                 "provided_context": '{"wf":{"vars":{"emails":["a@example.com"]}}}',
                 "debug": False,
                 "mode": "release",
+                "runtime_options": {"num_ctx": 4096, "num_predict": 256, "batch": 1, "temperature": 0.8, "num_gpu": -1},
+                "repair_budget": 2,
             },
             "timeout": 180.0,
         }
     ]
     assert json.loads(report_path.read_text(encoding="utf-8"))["response"]["validation_status"] == "passed"
+
+
+def test_cli_generate_release_prints_live_api_progress_from_stream(monkeypatch, capsys) -> None:
+    http_client = StreamingHttpClient(
+        [
+            '{"type":"progress","stage":"request_received","index":1}',
+            '{"type":"progress","stage":"generation","index":2}',
+            '{"type":"progress","stage":"deterministic_validation","index":3}',
+            (
+                '{"type":"final","payload":{'
+                '"code":"return wf.vars.emails[#wf.vars.emails]",'
+                '"validation_status":"passed",'
+                '"stop_reason":"passed",'
+                '"trace":["request_received","generation","deterministic_validation","response_ready"]'
+                "}}"
+            ),
+        ]
+    )
+    monkeypatch.setattr(cli_main.httpx, "Client", lambda: http_client)
+    monkeypatch.setattr(cli_main.sys.stdout, "isatty", lambda: True)
+
+    exit_code = cli_main.main(["generate", "--task", "Из массива emails верни последний email."])
+
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert "Debug progress:" in output
+    assert "слой 1: request_received прошёл" in output
+    assert "слой 2: generation прошёл" in output
+    assert "Status: passed" in output
+    assert http_client.streams == [
+        {
+            "method": "POST",
+            "url": "http://127.0.0.1:8011/generate/progress",
+            "json": {
+                "task_text": "Из массива emails верни последний email.",
+                "provided_context": None,
+                "debug": False,
+                "mode": "release",
+                "runtime_options": {"num_ctx": 4096, "num_predict": 256, "batch": 1, "temperature": 0.8, "num_gpu": -1},
+                "repair_budget": 2,
+            },
+            "timeout": 180.0,
+        }
+    ]
 
 
 def test_cli_generate_release_rejects_runtime_overrides(capsys) -> None:
@@ -297,7 +390,43 @@ def test_cli_chat_accepts_plain_text_task(monkeypatch, capsys) -> None:
         "provided_context": None,
         "debug": False,
         "mode": "release",
+        "runtime_options": {"num_ctx": 4096, "num_predict": 256, "batch": 1, "temperature": 0.8, "num_gpu": -1},
+        "repair_budget": 2,
     }
+
+
+def test_cli_chat_merges_multiline_json_paste_into_one_task(monkeypatch, capsys) -> None:
+    http_client = RecordingHttpClient()
+    monkeypatch.setattr(cli_main.httpx, "Client", lambda: http_client)
+    commands = iter(
+        [
+            'Из полученного списка email получи последний. {',
+            '  "wf": {',
+            '    "vars": {',
+            '      "emails": ["user1@example.com", "user2@example.com"]',
+            "    }",
+            "  }",
+            "}",
+            "/exit",
+        ]
+    )
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(commands))
+
+    exit_code = cli_main.main(["chat"])
+
+    assert exit_code == 0
+    capsys.readouterr()
+    assert http_client.posts[0]["json"]["task_text"] == "\n".join(
+        [
+            'Из полученного списка email получи последний. {',
+            '  "wf": {',
+            '    "vars": {',
+            '      "emails": ["user1@example.com", "user2@example.com"]',
+            "    }",
+            "  }",
+            "}",
+        ]
+    )
 
 
 def test_cli_chat_keeps_inline_json_inside_task_text(monkeypatch, capsys) -> None:
@@ -324,6 +453,8 @@ def test_cli_chat_keeps_inline_json_inside_task_text(monkeypatch, capsys) -> Non
         "provided_context": None,
         "debug": False,
         "mode": "release",
+        "runtime_options": {"num_ctx": 4096, "num_predict": 256, "batch": 1, "temperature": 0.8, "num_gpu": -1},
+        "repair_budget": 2,
     }
 
 
@@ -350,8 +481,10 @@ def test_cli_chat_context_command_keeps_raw_context_for_next_task(monkeypatch, c
         "provided_context": '{ "wf": { "vars": { "emails": [ "user1@example.com", "user2@example.com", "user3@example.com" ] } } }',
         "debug": False,
         "mode": "release",
+        "runtime_options": {"num_ctx": 4096, "num_predict": 256, "batch": 1, "temperature": 0.8, "num_gpu": -1},
+        "repair_budget": 2,
     }
-    assert output.count("Mode: release | Lang: ru | Model: qwen2.5-coder:3b | Path: with-api | Allow cloud: False | Params: num_ctx=4096 num_predict=256 batch=1 temperature=0.8 parallel=1") == 1
+    assert output.count("Mode: release | Lang: ru | Model: qwen2.5-coder:3b | Path: with-api | Allow cloud: False | Params: num_ctx=4096 num_predict=256 batch=1 temperature=0.8 parallel=1 num_gpu=-1 | Repair budget: 2") == 1
 
 
 def test_cli_chat_slash_commands_switch_debug_cloud_model(monkeypatch, capsys) -> None:
@@ -379,6 +512,39 @@ def test_cli_chat_slash_commands_switch_debug_cloud_model(monkeypatch, capsys) -
         "mode": "debug",
         "model": "gpt-oss:20b-cloud",
         "allow_cloud_model": True,
+        "repair_budget": 2,
+    }
+
+
+def test_cli_chat_model_n_resets_to_default_and_repair_budget_updates_payload(monkeypatch, capsys) -> None:
+    http_client = RecordingHttpClient()
+    monkeypatch.setattr(cli_main.httpx, "Client", lambda: http_client)
+    commands = iter(
+        [
+            "/debug",
+            "/allow-cloud on",
+            "/model qwen3-coder:480b-cloud",
+            "/ model n",
+            "/repair-budget 3",
+            "Верни Lua print.",
+            "/exit",
+        ]
+    )
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(commands))
+
+    exit_code = cli_main.main(["chat"])
+
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert "Model: qwen2.5-coder:3b" in output
+    assert "Repair budget: 3" in output
+    assert http_client.posts[0]["json"] == {
+        "task_text": "Верни Lua print.",
+        "provided_context": None,
+        "debug": True,
+        "mode": "debug",
+        "allow_cloud_model": True,
+        "repair_budget": 3,
     }
 
 
@@ -450,6 +616,7 @@ def test_cli_chat_debug_prints_full_pipeline(monkeypatch, capsys) -> None:
 
     output = capsys.readouterr().out
     assert "Pipeline Trace:" in output
+    assert "Debug progress:" in output
     assert "Request Payload:" in output
     assert "Prompt Package:" in output
     assert "Pipeline Layers:" in output
@@ -703,8 +870,8 @@ def test_cli_chat_reprints_status_after_parameter_changes(monkeypatch, capsys) -
     assert cli_main.main(["chat"]) == 0
 
     output = capsys.readouterr().out
-    assert "Mode: debug | Lang: ru | Model: qwen2.5-coder:3b | Path: with-api | Allow cloud: False | Params: num_ctx=4096 num_predict=256 batch=1 temperature=0.8 parallel=1" in output
-    assert "Mode: debug | Lang: ru | Model: gpt-oss:20b-cloud | Path: with-api | Allow cloud: True | Params: num_ctx=4096 num_predict=512 batch=1 temperature=0.8 parallel=1" in output
+    assert "Mode: debug | Lang: ru | Model: qwen2.5-coder:3b | Path: with-api | Allow cloud: False | Params: num_ctx=4096 num_predict=256 batch=1 temperature=0.8 parallel=1 | Repair budget: 2" in output
+    assert "Mode: debug | Lang: ru | Model: gpt-oss:20b-cloud | Path: with-api | Allow cloud: True | Params: num_ctx=4096 num_predict=512 batch=1 temperature=0.8 parallel=1 | Repair budget: 2" in output
 
 
 def test_cli_chat_context_command_does_not_reprint_status(monkeypatch, capsys) -> None:
@@ -721,7 +888,7 @@ def test_cli_chat_context_command_does_not_reprint_status(monkeypatch, capsys) -
     assert cli_main.main(["chat"]) == 0
 
     output = capsys.readouterr().out
-    assert output.count("Mode: release | Lang: ru | Model: qwen2.5-coder:3b | Path: with-api | Allow cloud: False | Params: num_ctx=4096 num_predict=256 batch=1 temperature=0.8 parallel=1") == 1
+    assert output.count("Mode: release | Lang: ru | Model: qwen2.5-coder:3b | Path: with-api | Allow cloud: False | Params: num_ctx=4096 num_predict=256 batch=1 temperature=0.8 parallel=1 num_gpu=-1 | Repair budget: 2") == 1
 
 
 def test_cli_chat_roots_command_narrows_json_context(monkeypatch, capsys) -> None:

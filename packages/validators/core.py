@@ -16,7 +16,9 @@ from packages.shared.quality import ValidationFinding, ValidatorReport
 RAW_LUA = "raw_lua"
 JSON_WRAPPER = "json_wrapper"
 PATCH_MODE = "patch_mode"
+LOWCODE_JSON = "lowcode_json"
 CLARIFICATION = "clarification"
+_JSON_LUA_OUTPUT_MODES = {JSON_WRAPPER, PATCH_MODE, LOWCODE_JSON}
 _ARRAY_ITEM_OPERATIONS = {"last_array_item", "first_array_item"}
 
 _WF_ROOT_PATTERN = re.compile(r"wf\.(?:vars|initVariables)\.[A-Za-z0-9_\.]+")
@@ -150,7 +152,7 @@ def validate_format(candidate: str, output_mode: str) -> ValidatorReport:
             normalized_candidate=stripped,
         )
 
-    if output_mode in {JSON_WRAPPER, PATCH_MODE}:
+    if output_mode in _JSON_LUA_OUTPUT_MODES:
         if "```" in stripped:
             return _fail_report(
                 "format_validator",
@@ -189,6 +191,36 @@ def validate_format(candidate: str, output_mode: str) -> ValidatorReport:
                     suggestion="Return a JSON object instead of an array or scalar.",
                 ),
             )
+        if output_mode == LOWCODE_JSON:
+            non_string_leaves = [
+                location
+                for location, value in _iter_leaf_values(payload)
+                if not isinstance(value, str)
+            ]
+            if non_string_leaves:
+                return _fail_report(
+                    "format_validator",
+                    ValidationFinding(
+                        validator="format_validator",
+                        failure_class="non_string_lua_value",
+                        message="LowCode JSON output leaves must be JsonString values in lua{...}lua format.",
+                        location=non_string_leaves[0],
+                        repairable=True,
+                        suggestion="Return generated Lua as JSON string values wrapped with lua{...}lua.",
+                    ),
+                )
+            if not _iter_string_leaves(payload):
+                return _fail_report(
+                    "format_validator",
+                    ValidationFinding(
+                        validator="format_validator",
+                        failure_class="missing_lua_value",
+                        message="LowCode JSON output must contain at least one lua{...}lua string value.",
+                        location="response",
+                        repairable=True,
+                        suggestion="Return a JSON object with a generated lua{...}lua string value.",
+                    ),
+                )
         invalid_wrappers = [
             location
             for location, value in _iter_string_leaves(payload)
@@ -538,6 +570,19 @@ def _validate_forbidden_patterns(
             return findings
 
     for location, segment in lua_segments:
+        if re.search(r"\bprint\s*\(", segment):
+            findings.append(
+                ValidationFinding(
+                    validator="forbidden_patterns_validator",
+                    failure_class="debug_output",
+                    message="LowCode Lua output must not call print or emit debug output.",
+                    location=location,
+                    repairable=True,
+                    suggestion="Remove print/debug output and return only the requested value.",
+                )
+            )
+            return findings
+
         for pattern in forbidden_patterns:
             if pattern in segment:
                 findings.append(
@@ -1473,6 +1518,20 @@ def _extract_lua_segments(candidate: str, output_mode: str) -> list[tuple[str, s
     for location, value in _iter_string_leaves(payload):
         segments.append((location, value[4:-4]))
     return segments
+
+
+def _iter_leaf_values(node: Any, location: str = "$") -> list[tuple[str, object]]:
+    if isinstance(node, dict):
+        leaves: list[tuple[str, object]] = []
+        for key, value in node.items():
+            leaves.extend(_iter_leaf_values(value, f"{location}.{key}"))
+        return leaves
+    if isinstance(node, list):
+        leaves: list[tuple[str, object]] = []
+        for index, value in enumerate(node):
+            leaves.extend(_iter_leaf_values(value, f"{location}[{index}]"))
+        return leaves
+    return [(location, node)]
 
 
 def _iter_string_leaves(node: Any, location: str = "$") -> list[tuple[str, str]]:

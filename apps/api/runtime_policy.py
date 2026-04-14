@@ -14,6 +14,7 @@ DEFAULT_NUM_PREDICT = 256
 DEFAULT_BATCH = 1
 DEFAULT_PARALLEL = 1
 DEFAULT_TEMPERATURE = 0.8
+RELEASE_NUM_GPU = -1
 RELEASE_MODE = "release"
 DEBUG_MODE = "debug"
 _CLOUD_MODEL_PATTERN = re.compile(r"(^|[:_-])cloud($|[:_-])|-cloud$")
@@ -25,6 +26,7 @@ class RuntimeOptions:
     num_predict: int = DEFAULT_NUM_PREDICT
     batch: int = DEFAULT_BATCH
     temperature: float = DEFAULT_TEMPERATURE
+    num_gpu: int | None = None
 
     @classmethod
     def from_env(cls) -> "RuntimeOptions":
@@ -36,6 +38,16 @@ class RuntimeOptions:
         )
 
     @classmethod
+    def release_defaults(cls) -> "RuntimeOptions":
+        return cls(
+            num_ctx=DEFAULT_NUM_CTX,
+            num_predict=DEFAULT_NUM_PREDICT,
+            batch=DEFAULT_BATCH,
+            temperature=DEFAULT_TEMPERATURE,
+            num_gpu=RELEASE_NUM_GPU,
+        )
+
+    @classmethod
     def from_mapping(cls, payload: Mapping[str, object] | None) -> "RuntimeOptions":
         if payload is None:
             return cls.from_env()
@@ -44,15 +56,19 @@ class RuntimeOptions:
             num_predict=_positive_int(payload.get("num_predict"), "num_predict"),
             batch=_positive_int(payload.get("batch"), "batch"),
             temperature=_non_negative_float(payload.get("temperature", DEFAULT_TEMPERATURE), "temperature"),
+            num_gpu=_optional_int(payload.get("num_gpu"), "num_gpu"),
         )
 
     def to_ollama_options(self) -> dict[str, int | float]:
-        return {
+        options: dict[str, int | float] = {
             "num_ctx": self.num_ctx,
             "num_predict": self.num_predict,
             "batch": self.batch,
             "temperature": self.temperature,
         }
+        if self.num_gpu is not None:
+            options["num_gpu"] = self.num_gpu
+        return options
 
 
 def effective_parallel() -> int:
@@ -140,6 +156,19 @@ def _positive_int(value: object, name: str) -> int:
             message=f"{name} must be a positive integer.",
         )
     return parsed
+
+
+def _optional_int(value: object, name: str) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(str(value))
+    except (TypeError, ValueError) as exc:
+        raise ApiError(
+            status_code=422,
+            code="invalid_runtime_options",
+            message=f"{name} must be an integer.",
+        ) from exc
 
 
 def _non_negative_float(value: object, name: str) -> float:
