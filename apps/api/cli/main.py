@@ -147,7 +147,7 @@ def _handle_generate(args: argparse.Namespace) -> int:
     status = response_payload.get("validation_status", "not_run")
     code = str(response_payload.get("code", ""))
     console.print(f"Status: {status}")
-    _print_literal(console, code)
+    _print_generated_code(console, code)
     _print_pipeline_debug(
         args=args,
         provided_context=provided_context,
@@ -320,7 +320,7 @@ def _handle_chat(args: argparse.Namespace) -> int:
 
         status = response_payload.get("validation_status", "not_run")
         console.print(f"Status: {status}")
-        _print_literal(console, str(response_payload.get("code", "")))
+        _print_generated_code(console, str(response_payload.get("code", "")))
         _print_pipeline_debug(
             args=task_args,
             provided_context=provided_context,
@@ -543,7 +543,7 @@ def _run_feedback_attempt(
     )
     status = retry_payload.get("validation_status", "not_run")
     console.print(f"Status: {status}")
-    _print_literal(console, str(retry_payload.get("code", "")))
+    _print_generated_code(console, str(retry_payload.get("code", "")))
     _print_pipeline_debug(
         args=feedback_args,
         provided_context=provided_context,
@@ -586,36 +586,36 @@ def _print_pipeline_debug(
         console.print("trace unavailable")
 
     console.print("Request Payload:")
-    _print_literal(console, _pretty_json(_debug_request_payload(args, provided_context)))
+    _print_debug_literal(console, _pretty_json(_debug_request_payload(args, provided_context)))
 
     debug_payload = response_payload.get("debug")
     if isinstance(debug_payload, dict):
         console.print("Prompt Package:")
-        _print_literal(console, _pretty_json(debug_payload.get("prompt_package")))
+        _print_debug_literal(console, _pretty_json(debug_payload.get("prompt_package")))
 
         console.print("Pipeline Layers:")
-        _print_literal(console, _pretty_json(debug_payload.get("pipeline_layers", [])))
+        _print_debug_literal(console, _pretty_json(debug_payload.get("pipeline_layers", [])))
 
         console.print("Agent Layers:")
-        _print_literal(console, _format_agent_layers(debug_payload))
+        _print_debug_literal(console, _format_agent_layers(debug_payload))
 
         console.print("Agent Layer Calls:")
-        _print_literal(console, _pretty_json(debug_payload.get("agent_layer_calls", [])))
+        _print_debug_literal(console, _pretty_json(debug_payload.get("agent_layer_calls", [])))
 
         console.print("Model Calls:")
-        _print_literal(console, _pretty_json(debug_payload.get("model_calls", [])))
+        _print_debug_literal(console, _pretty_json(debug_payload.get("model_calls", [])))
 
         console.print("Validation Passes:")
-        _print_literal(console, _pretty_json(debug_payload.get("validation_passes", [])))
+        _print_debug_literal(console, _pretty_json(debug_payload.get("validation_passes", [])))
     else:
         console.print("Debug Payload:")
         console.print("debug payload unavailable")
 
     console.print("Critic Report:")
-    _print_literal(console, _pretty_json(response_payload.get("critic_report")))
+    _print_debug_literal(console, _pretty_json(response_payload.get("critic_report")))
 
     console.print("Validator Report:")
-    _print_literal(console, _pretty_json(response_payload.get("validator_report")))
+    _print_debug_literal(console, _pretty_json(response_payload.get("validator_report")))
 
 
 def _print_debug_progress_start(args: argparse.Namespace, console: Console | None) -> None:
@@ -685,8 +685,39 @@ def _print_literal(console: Console, value: object) -> None:
     console.print(_render_cli_text(str(value)), markup=False)
 
 
+def _print_debug_literal(console: Console, value: object) -> None:
+    console.print(str(value), markup=False)
+
+
+def _print_generated_code(console: Console, value: object) -> None:
+    console.print(_render_generated_code_text(str(value)), markup=False)
+
+
 def _render_cli_text(value: str) -> str:
     return value.replace("\\r\\n", "\n").replace("\\n", "\n")
+
+
+def _render_generated_code_text(value: str) -> str:
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return _render_cli_text(value)
+    if isinstance(parsed, dict):
+        return _render_decoded_mapping(parsed)
+    return _render_cli_text(value)
+
+
+def _render_decoded_mapping(payload: dict[str, object]) -> str:
+    lines = ["{"]
+    items = list(payload.items())
+    for index, (key, item) in enumerate(items):
+        suffix = "," if index < len(items) - 1 else ""
+        if isinstance(item, str):
+            lines.append(f'  "{key}": "{item}"{suffix}')
+        else:
+            lines.append(f'  "{key}": {json.dumps(item, ensure_ascii=False)}{suffix}')
+    lines.append("}")
+    return "\n".join(lines)
 
 
 def _handle_doctor(args: argparse.Namespace) -> int:

@@ -1,57 +1,67 @@
-# PROJECT STATUS
+# Project Status
 
-Краткий статусный документ проекта LocalScript Agent.
-
-Полный source of truth по этапам, рискам, scope и зависимостям находится в [../PROJECT_STATUS_full.md](../PROJECT_STATUS_full.md). Этот файл нужен для быстрого входа в контекст без чтения полного roadmap.
+Краткий статус `luaMTS`.
 
 ## Текущее состояние
 
-- текущий этап baseline закрыт: `S-0 = done`;
-- доменная декомпозиция и baseline benchmark layer собраны: `S-1 = done`;
-- минимальный agent contour собран документарно: `S-3 = done`;
-- локальный backend уже работает: `S-4 = done`;
-- репозиторий зафиксирован как локальный LocalScript-агент, а не универсальный AI-ассистент;
-- конкурсные ограничения и MVP-границы вынесены в отдельные документы;
-- создана стартовая структура каталогов для последующих этапов;
-- для разработки agent contour временно заморожен provisional model tag: `qwen2.5-coder:3b`;
-- финальный model bake-off перенесён на этап после появления agent contour и validation / repair loop;
-- backend поднимает `/health` и `/generate`, отдаёт OpenAPI и вызывает только локальный runtime через `Ollama`.
+Проект имеет рабочий локальный backend, CLI, Docker Compose runtime и active validation pipeline.
 
-## Карта этапов
+Фактический API pipeline:
 
-| ID | Этап | Статус | Краткий результат |
-| --- | --- | --- | --- |
-| S-0 | Репозиторный baseline и конкурсная фиксация | `done` | Зафиксированы рамки проекта, ограничения, MVP и стартовая структура |
-| S-1 | Декомпозиция домена LocalScript и benchmark layer | `done` | Собраны формальная карта домена, archetypes задач и baseline regression pack |
-| S-2 | Финальный отбор модели под 8 GB VRAM | `deferred` | Финальный bake-off перенесён после agent contour и validator / repair loop; до этого используется provisional `qwen2.5-coder:3b` |
-| S-3 | Выделение агентного контура из Qwen Code и Claw Code | `done` | Зафиксированы agent architecture, state machine, pipeline sequence и skill decomposition |
-| S-4 | Core generation service и API-контракт | `done` | Рабочий локальный backend с `/health`, `/generate`, OpenAPI и локальным model path |
-| S-5 | Domain adapter для LocalScript-формата | `done` | Принуждение ответа к LocalScript-правилам |
-| S-6 | Validator, critic и repair loop | `done` | Управляемый контур проверки, critic-driven repair и bounded loop |
-| S-7 | Локальная база знаний, шаблоны и retrieval | `planned` | Локальный слой примеров, archetypes и retrieval |
-| S-8 | UI как дополнительный необязательный этап | `planned` | Demo-friendly интерфейс без подмены ядра |
-| S-9 | Evaluation harness и регрессионный набор | `planned` | Метрики, benchmark runner и regression suite |
-| S-10 | Docker-first развёртывание, безопасность и воспроизводимость | `planned` | Однострочный локальный запуск |
-| S-11 | Конкурсные артефакты: README, C4, видео, презентация | `planned` | Полный комплект материалов для сдачи |
-| S-12 | Финальная полировка и защита | `planned` | Готовность к защите и закрытым тестам |
+```text
+planner -> prompter -> generator -> deterministic_validation -> optional repair_generation
+```
 
-## Что уже зафиксировано
+Ключевые свойства:
 
-- проект обязан работать полностью локально;
-- runtime обязан идти через `Ollama`;
-- внешний AI inference запрещён;
-- VRAM budget ограничен `8 GB`;
-- система должна генерировать именно **LocalScript-совместимый** Lua;
-- validation и хотя бы один полезный agentic шаг обязательны;
-- воспроизводимость должна быть оформлена документированно и без ручной магии.
+- `/health`, `/generate`, `/generate/progress`;
+- LowCode JSON contract `lua{...}lua`;
+- planner/propmter agent layers;
+- generator truncation guard на `num_predict`;
+- deterministic validators;
+- bounded repair budget;
+- CLI с debug/release режимами;
+- Docker Compose runtime с Ollama + API;
+- benchmark runner и артефакты `7_progon`.
 
-## Что ещё не сделано
+## Что уже работает
 
-- не выбран финальный model tag внутри реального agent pipeline;
-- не построен evaluation harness;
-- не оформлен Docker-first runtime;
-- не подготовлены конкурсные финальные артефакты.
+- Локальная генерация через Ollama.
+- Release mode с запретом cloud model tags.
+- Debug mode с возможностью cloud tags только через явный `--allow-cloud-model`.
+- Live progress по слоям API.
+- Human-readable CLI output без повреждения raw candidate.
+- Benchmark scripts и отчёты в `artifacts/benchmark_runs/`.
 
-## Следующий фокус
+## Последний benchmark
 
-Следующий рабочий этап: `S-7` — локальная база знаний, шаблоны и retrieval, чтобы снизить нагрузку на модель и сделать generation стабильнее за счёт локальных примеров и структурированного контекста.
+`artifacts/benchmark_runs/7_progon/`
+
+```text
+total: 50
+status_counts: {'passed': 50}
+passed_without_hint: 47
+passed_with_hint: 3
+passed_on_generation_counts: {'1': 48, '2': 2}
+```
+
+## Остающиеся зоны развития
+
+- Финальный локальный model bake-off под ограничение VRAM.
+- Runtime behavioral validation для задач, где можно исполнить Lua на fixture.
+- Более строгий semantic/runtime scoring benchmark.
+- Финальные конкурсные материалы: видео, презентация, проверка инструкции на чистых машинах.
+
+## Основной запуск
+
+```bash
+docker compose up --build
+docker compose exec api luamts doctor
+docker compose exec api luamts
+```
+
+Подробности:
+
+- [../README.md](../README.md)
+- [how_validation_work.md](how_validation_work.md)
+- [../docker/README.md](../docker/README.md)

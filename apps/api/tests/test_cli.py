@@ -117,6 +117,52 @@ def test_cli_literal_print_renders_escaped_newlines_as_lines() -> None:
     ]
 
 
+def test_cli_generated_code_print_decodes_json_escaped_quotes_and_newlines() -> None:
+    class RecordingConsole:
+        def __init__(self) -> None:
+            self.calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+        def print(self, *objects: object, **kwargs: object) -> None:
+            self.calls.append((objects, kwargs))
+
+    console = RecordingConsole()
+
+    cli_main._print_generated_code(
+        console,
+        '{"result":"lua{if type(datum) ~= \\"string\\" then\\n  return \\"\\"\\nend}lua"}',
+    )
+
+    assert console.calls == [
+        (
+            (
+                '{\n'
+                '  "result": "lua{if type(datum) ~= "string" then\n'
+                '  return ""\n'
+                'end}lua"\n'
+                '}',
+            ),
+            {"markup": False},
+        )
+    ]
+
+
+def test_cli_debug_literal_preserves_json_escaped_newlines() -> None:
+    class RecordingConsole:
+        def __init__(self) -> None:
+            self.calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+        def print(self, *objects: object, **kwargs: object) -> None:
+            self.calls.append((objects, kwargs))
+
+    console = RecordingConsole()
+
+    cli_main._print_debug_literal(console, '{"raw_response":"lua{a\\nb}"}')
+
+    assert console.calls == [
+        (('{"raw_response":"lua{a\\nb}"}',), {"markup": False})
+    ]
+
+
 def test_cli_generate_release_calls_api_and_writes_report(tmp_path, monkeypatch, capsys) -> None:
     context_path = tmp_path / "context.json"
     context_path.write_text('{"wf":{"vars":{"emails":["a@example.com"]}}}', encoding="utf-8")

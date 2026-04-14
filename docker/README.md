@@ -1,90 +1,203 @@
-# Docker Baseline
+# Docker Runtime
 
-Каталог `docker/` создан на этапе `S-0` как baseline-заготовка под будущую Docker-first поставку.
+Docker Compose - рекомендуемый способ запустить `luaMTS` на машине проверяющего без ручной настройки Python, Lua tooling и Ollama.
 
-Сейчас здесь есть ранний runtime slice:
+## Что поднимается
 
-- `docker-compose.yml` в корне проекта;
-- `docker/api/Dockerfile` для API-образа с уже встроенными `stylua`, `luacheck`, `lua5.4`;
-- связка `ollama` + `api` для локальной проверки;
-- init-сервис, который либо делает `ollama pull`, либо создаёт модель из локального `.gguf`.
-- CLI `luamts` внутри API-контейнера для `generate`, `doctor`, `bench`, `vram-check`.
+`docker-compose.yml` запускает три сервиса:
 
-При этом здесь **ещё нет**:
+- `ollama` - локальный Ollama server;
+- `ollama-model-init` - одноразовая инициализация модели через `ollama pull` или `ollama create` из локального `.gguf`;
+- `api` - FastAPI backend + CLI `luamts`.
 
-- GPU-aware runtime профилей;
-- production-hardening;
-- полноценного smoke/e2e сценария;
-- финальной deployment-конфигурации.
+API-образ собирается из [docker/api/Dockerfile](api/Dockerfile) и содержит:
 
-То есть это docker-preview для воспроизводимой локальной проверки, а не полное закрытие `S-10`.
+- Python API;
+- CLI;
+- `stylua`;
+- `luacheck`;
+- `lua5.4`;
+- validation/runtime tooling.
 
-## Как сейчас инициализируется модель
+## Быстрый запуск
 
-По умолчанию compose использует сценарий `pull`:
-
-- `OLLAMA_MODEL=qwen2.5-coder:3b`
-- `ollama-model-init` ждёт готовности `ollama`
-- затем выполняет `ollama pull <tag>`
-
-Для локального `.gguf` используется тот же init-сервис, но с двумя переменными:
-
-- `OLLAMA_LOCAL_GGUF_DIR`
-- `OLLAMA_LOCAL_GGUF_BASENAME`
-
-Если `OLLAMA_LOCAL_GGUF_BASENAME` задан, сервис:
-
-- монтирует каталог с моделью в `/models`
-- создаёт временный `Modelfile`
-- выполняет `ollama create $OLLAMA_MODEL -f <temp-modelfile>`
-- сохраняет готовую модель в volume `ollama-data`
-
-Пример для Windows PowerShell:
-
-```powershell
-$env:OLLAMA_MODEL='qwen3.5-9b:local-q5ks'
-$env:OLLAMA_LOCAL_GGUF_DIR='C:/Users/epitaph/Downloads'
-$env:OLLAMA_LOCAL_GGUF_BASENAME='Qwen3.5-9B.Q5_K_S.gguf'
-$env:OLLAMA_PUBLISHED_PORT='21434'
-$env:API_PUBLISHED_PORT='18011'
-docker compose up --build
-```
-
-После первого успешного импорта модель останется в `ollama-data`, и повторный старт сможет её переиспользовать без нового `create`.
-
-Параметры `OLLAMA_PUBLISHED_PORT` и `API_PUBLISHED_PORT` нужны, если локальные процессы уже занимают `11434` и `8011`.
-
-Основной запуск остаётся одной командой:
+Windows PowerShell:
 
 ```powershell
 docker compose up --build
 ```
 
-После старта CLI запускается через API-контейнер:
+macOS / Linux:
+
+```bash
+docker compose up --build
+```
+
+Первый запуск может быть долгим: `ollama-model-init` скачивает модель в volume `ollama-data`.
+
+После старта:
+
+- API: `http://127.0.0.1:8011`
+- Ollama: `http://127.0.0.1:11434`
+
+Проверка:
+
+PowerShell:
 
 ```powershell
+Invoke-RestMethod http://127.0.0.1:8011/health
 docker compose exec api luamts doctor
-docker compose exec api luamts generate --mode release --task "Из массива emails верни последний email."
+```
+
+macOS / Linux:
+
+```bash
+curl http://127.0.0.1:8011/health
+docker compose exec api luamts doctor
+```
+
+## Генерация через CLI
+
+Интерактивный режим:
+
+```bash
 docker compose exec api luamts
 ```
 
-В интерактивном режиме plain text отправляется как задача генерации, а режимы меняются slash-командами: `/debug`, `/release`, `/model <tag>`, `/allow-cloud on|off`, `/with-api`, `/without-api`, `/exit`.
+Одноразовый запрос:
 
-## Что уже зафиксировано
+```bash
+docker compose exec api luamts generate --mode release --task "Из массива emails верни последний email." --context '{"wf":{"vars":{"emails":["a@example.com","b@example.com"]}}}'
+```
 
-- поставка проекта должна быть локальной;
-- runtime модели обязан идти через `Ollama`;
-- внешний AI inference запрещён;
-- запуск должен быть воспроизводимым;
-- финальная сдача должна поддерживать простой и документированный запуск.
+Debug-пример:
 
-## Что должно появиться позже
+```bash
+docker compose exec api luamts generate --mode debug --debug-trace --task "Из массива emails верни последний email." --context '{"wf":{"vars":{"emails":["a@example.com","b@example.com"]}}}'
+```
 
-На этапе `S-10` здесь должны быть оформлены:
+## Порты
 
-- Dockerfile(ы) для backend и связанных сервисов;
-- `docker-compose.yml`;
-- описание GPU-требований;
-- фиксированный `ollama pull <tag>`;
-- smoke path для локальной проверки;
-- deployment и security-документация.
+Если `8011` или `11434` уже заняты:
+
+PowerShell:
+
+```powershell
+$env:API_PUBLISHED_PORT='18011'
+$env:OLLAMA_PUBLISHED_PORT='21434'
+docker compose up --build
+```
+
+macOS / Linux:
+
+```bash
+API_PUBLISHED_PORT=18011 OLLAMA_PUBLISHED_PORT=21434 docker compose up --build
+```
+
+## Модель
+
+По умолчанию:
+
+```text
+OLLAMA_MODEL=qwen2.5-coder:3b
+```
+
+Переопределение:
+
+PowerShell:
+
+```powershell
+$env:OLLAMA_MODEL='qwen2.5-coder:3b'
+docker compose up --build
+```
+
+macOS / Linux:
+
+```bash
+OLLAMA_MODEL=qwen2.5-coder:3b docker compose up --build
+```
+
+## Локальный GGUF
+
+Если модель уже скачана как `.gguf`, можно создать Ollama model из локального файла.
+
+PowerShell:
+
+```powershell
+$env:OLLAMA_MODEL='local-lua-model:q5'
+$env:OLLAMA_LOCAL_GGUF_DIR='C:/Users/epitaph/Downloads'
+$env:OLLAMA_LOCAL_GGUF_BASENAME='model.Q5_K_S.gguf'
+docker compose up --build
+```
+
+macOS / Linux:
+
+```bash
+OLLAMA_MODEL=local-lua-model:q5 \
+OLLAMA_LOCAL_GGUF_DIR=/home/user/Downloads \
+OLLAMA_LOCAL_GGUF_BASENAME=model.Q5_K_S.gguf \
+docker compose up --build
+```
+
+После успешного `ollama create` модель остаётся в volume `ollama-data`.
+
+## Cloud guard
+
+По умолчанию compose выставляет:
+
+```text
+OLLAMA_NO_CLOUD=1
+```
+
+Это конкурсный/release-safe режим: cloud inference запрещён.
+
+Для локальной debug-разработки можно явно разрешить cloud:
+
+PowerShell:
+
+```powershell
+$env:OLLAMA_NO_CLOUD='0'
+docker compose up --build
+docker compose exec api luamts generate --mode debug --model qwen3-coder:480b-cloud --allow-cloud-model --task "..."
+```
+
+macOS / Linux:
+
+```bash
+OLLAMA_NO_CLOUD=0 docker compose up --build
+docker compose exec api luamts generate --mode debug --model qwen3-coder:480b-cloud --allow-cloud-model --task "..."
+```
+
+Cloud-tags запрещены в release mode даже при `OLLAMA_NO_CLOUD=0`.
+
+## Runtime options
+
+Compose defaults:
+
+```text
+OLLAMA_NUM_CTX=4096
+OLLAMA_NUM_PREDICT=256
+OLLAMA_BATCH=1
+OLLAMA_PARALLEL=1
+```
+
+В release mode API добавляет GPU-only option `num_gpu=-1`, чтобы не использовать CPU offload. В debug mode это ограничение не применяется, чтобы можно было диагностировать модели и cloud-tags.
+
+## Проверка compose-файла
+
+Без запуска контейнеров:
+
+```bash
+docker compose config
+```
+
+Полный smoke:
+
+```bash
+docker compose up --build
+docker compose exec api luamts doctor
+docker compose exec api luamts generate --mode release --task "Из массива emails верни последний email." --context '{"wf":{"vars":{"emails":["a@example.com","b@example.com"]}}}'
+docker compose down
+```
+
+Эти команды одинаковы для Windows PowerShell, macOS и Linux, кроме синтаксиса переменных окружения, который указан выше.

@@ -1,104 +1,75 @@
-# CONSTRAINTS
+# Constraints
 
-Этот документ фиксирует ограничения проекта как инженерные правила, а не как устные договорённости.
+Этот документ фиксирует инженерные ограничения `luaMTS`.
 
-## 1. Граница проекта
+## Project boundary
 
-Проект строится как **локальный агент для генерации LocalScript-совместимого Lua-кода**.
+Проект строится как локальный агент для генерации LowCode/LocalScript-совместимого Lua-кода.
 
-Проект **не** строится как:
+Проект не строится как:
 
 - универсальный coding assistant;
 - чат-обёртка вокруг внешнего AI API;
-- многозадачная AI-платформа;
-- UI-first продукт без проверяемого core pipeline.
+- UI-first продукт без проверяемого backend pipeline;
+- benchmark, который подмешивает эталонные решения в prompt.
 
-## 2. Обязательные конкурсные ограничения
+## Release/runtime constraints
 
-Система обязана:
+Release/demo контур обязан:
 
-- работать полностью локально;
-- использовать открытую модель;
-- запускать модель через `Ollama`;
-- укладываться в лимит `<= 8 GB VRAM`;
-- работать без CPU offload в демонстрационном контуре;
-- принимать задачу на естественном языке;
-- генерировать Lua-код;
-- выполнять хотя бы один полезный шаг уточнения или доработки;
-- выполнять проверяемую валидацию результата;
-- быть воспроизводимой по документации.
+- работать локально;
+- запускать модель через Ollama;
+- запрещать cloud model tags;
+- быть воспроизводимым через Docker Compose;
+- использовать компактные runtime-параметры:
+  - `num_ctx=4096`;
+  - `num_predict=256`;
+  - `batch=1`;
+  - `parallel=1`;
+- не использовать CPU offload в release mode (`num_gpu=-1`);
+- выполнять validation pipeline перед выдачей статуса `passed`.
 
-## 3. Что запрещено
+## Debug constraints
 
-В проекте запрещено:
+Debug mode может:
 
-- использовать `OpenAI`, `Anthropic` и любые другие внешние AI API;
-- использовать облачный inference;
-- выносить код, данные, промпты и контекст за пределы локального контура;
+- менять model tag;
+- менять runtime options;
+- включать cloud model tags только с явным `--allow-cloud-model`;
+- не применять release-only `num_gpu=-1`;
+- возвращать расширенный debug trace.
+
+Debug mode не является конкурсным runtime.
+
+## Forbidden
+
+Запрещено:
+
+- использовать OpenAI, Anthropic и другие внешние AI API;
 - полагаться на недокументированные ручные шаги;
-- делать невоспроизводимую сборку;
-- подменять инженерную систему “удачным single-shot prompt”.
+- молча менять пользовательский task/context;
+- пропускать candidate как `passed`, если deterministic validation не прошла;
+- использовать JsonPath вместо прямого доступа Lua;
+- генерировать `error()` в LowCode JSON output;
+- использовать benchmark expected solution как prompt context.
 
-## 4. Ограничения runtime
+## LowCode hard rules
 
-На baseline-уровне фиксируются следующие runtime-рамки:
+- LowCode variables: `wf.vars`.
+- Init variables: `wf.initVariables`.
+- Script wrapper: `lua{...}lua`.
+- New arrays: `_utils.array.new()`.
+- Existing array mark: `_utils.array.markAsArray(arr)`.
+- Allowed baseline constructs: `if`, `while`, `for`, `repeat`.
 
-- inference runtime: `Ollama`;
-- текущий базовый кандидат модели: `qwen2.5-coder:3b`;
-- `num_ctx=4096`;
-- `num_predict=256`;
-- `batch=1`;
-- `parallel=1`;
-- GPU budget: `<= 8 GB VRAM`.
+## Documentation/reproducibility
 
-Финальный model tag будет утверждён только на этапе `S-2`. До этого любые значения считаются baseline-кандидатами, а не окончательным выбором.
+Каждая проверяющая машина должна иметь простой путь:
 
-## 5. Ограничения домена
+```bash
+docker compose up --build
+docker compose exec api luamts doctor
+docker compose exec api luamts generate --mode release --task "..." --context '{...}'
+```
 
-Система обязана генерировать **не общий Lua**, а LocalScript-совместимый ответ.
-
-Это означает, что в дальнейшей реализации должны учитываться:
-
-- корректные пути данных;
-- корректная работа с `wf.vars.*`;
-- корректная работа с `wf.initVariables.*`;
-- различие между режимами ответа:
-  - raw Lua;
-  - JSON wrapper;
-  - patch existing code;
-  - clarification.
-
-## 6. Архитектурные guardrails
-
-При разработке системы обязательно соблюдать:
-
-- ограниченный agent loop вместо тяжёлой автономии;
-- отдельный validation layer;
-- ограниченный critic / repair loop;
-- модульное разделение backend, model adapter, orchestration, validators, retrieval и benchmark;
-- локальный retrieval только если он реально помогает и включён в поставку;
-- UI как опциональный слой, а не как центр проекта.
-
-## 7. Ограничения на scope
-
-На этапе `S-0` не входят:
-
-- выбор финальной модели;
-- backend;
-- validator;
-- retrieval;
-- benchmark harness;
-- UI;
-- production-ready Docker runtime.
-
-Эти части разрешены только в соответствующих следующих этапах roadmap.
-
-## 8. Практическое правило
-
-Если инженерное решение нарушает хотя бы одно из следующих условий, его нельзя принимать:
-
-- оно требует внешний AI runtime;
-- оно не помещается в ограничения конкурса;
-- оно не воспроизводится по документам;
-- оно размывает проект до универсального ассистента;
-- оно не даёт проверяемой валидации результата.
+Если этот путь ломается, это release blocker.

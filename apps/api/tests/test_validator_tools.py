@@ -46,6 +46,19 @@ def test_lowcode_json_format_requires_lua_wrapped_string_leaves() -> None:
     assert unwrapped_report.findings[0].failure_class == "invalid_wrapper"
 
 
+def test_lowcode_json_rejects_lua_error_calls() -> None:
+    report = core.validate_static(
+        '{"result":"lua{if not wf.vars.value then error(\\"missing\\") end\\nreturn wf.vars.value}lua"}',
+        output_mode=core.LOWCODE_JSON,
+        allowed_data_roots=("wf.vars.value",),
+        forbidden_patterns=(),
+    )
+
+    assert report.status == "fail"
+    assert report.findings[0].failure_class == "runtime_error_call"
+    assert report.findings[0].suggestion == "Return nil, false, or an empty string instead of throwing an error."
+
+
 def test_validate_syntax_surfaces_stylua_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(core, "_resolve_tool_binary", lambda env_var, default: "stylua")
 

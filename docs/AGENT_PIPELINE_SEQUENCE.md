@@ -1,70 +1,77 @@
-# AGENT PIPELINE SEQUENCE
+# Agent Pipeline Sequence
 
-## Назначение
+Этот документ фиксирует текущую sequence diagram для API path `/generate`.
 
-Этот документ фиксирует sequence diagram для pipeline `S-3`.
+## Happy path
 
 ```mermaid
 sequenceDiagram
     participant User
-    participant Orchestrator
-    participant Understanding as Task Understanding
-    participant Model
-    participant Format as Format Validator
-    participant Rules as Rule Validator
-    participant Critic
+    participant API as FastAPI /generate
+    participant Service as GenerationService
+    participant Planner as Planner agent
+    participant Prompter as Prompter agent
+    participant Generator as Generator model call
+    participant Validator as Deterministic validators
+    participant Critic as Critic report
 
-    User->>Orchestrator: task + optional context
-    Orchestrator->>Understanding: classify + context check + mode/archetype select
+    User->>API: task_text + optional provided_context
+    API->>Service: GenerateRequest
+    Service-->>User: progress request_received
 
-    alt missing critical input
-        Understanding-->>Orchestrator: clarification question
-        Orchestrator-->>User: clarification
-    else enough context
-        Understanding-->>Orchestrator: prompt package
-        Orchestrator->>Model: generation
-        Model-->>Orchestrator: candidate
-        Orchestrator->>Format: validate output mode
+    Service->>Planner: compact planner prompt
+    Planner-->>Service: TaskSpec JSON
+    Service-->>User: progress planner
 
-        alt format invalid
-            Format-->>Orchestrator: format report
-            Orchestrator->>Critic: localize defect
-            Critic-->>Orchestrator: repair task
+    Service->>Prompter: TaskSpec + user task + generator summary
+    Prompter-->>Service: short Russian prompt additions
+    Service-->>User: progress prompter
 
-            loop max 2 repair iterations
-                Orchestrator->>Model: repair_generation
-                Model-->>Orchestrator: repaired candidate
-                Orchestrator->>Format: validate output mode
-                Format-->>Orchestrator: format report
-            end
-        else format valid
-            Format-->>Orchestrator: pass
-        end
+    Service->>Generator: LowCode generator prompt
+    Generator-->>Service: candidate JSON
+    Service-->>User: progress generation
 
-        Orchestrator->>Rules: validate domain rules
+    Service->>Validator: candidate
+    Validator-->>Service: format/syntax/static/principle/rule reports
+    Service->>Critic: validation reports
+    Critic-->>Service: finalize
+    Service-->>User: progress deterministic_validation
 
-        alt rules pass
-            Rules-->>Orchestrator: pass
-            Orchestrator-->>User: finalize
-        else repairable rule failure
-            Rules-->>Orchestrator: rule report
-            Orchestrator->>Critic: localize defect
-            Critic-->>Orchestrator: repair task
-            Orchestrator->>Model: repair_generation
-            Model-->>Orchestrator: repaired candidate
-            Orchestrator->>Format: validate output mode
-        else missing input or budget exhausted
-            Rules-->>Orchestrator: stop signal
-            Orchestrator-->>User: clarification or bounded failure
-        end
+    Service-->>API: GenerateResponse
+    API-->>User: final response
+```
+
+## Repair path
+
+```mermaid
+sequenceDiagram
+    participant Service as GenerationService
+    participant Generator as Generator model call
+    participant Validator as Deterministic validators
+    participant Critic as Critic report
+
+    Service->>Validator: initial candidate
+    Validator-->>Service: repairable finding
+    Service->>Critic: validation reports
+    Critic-->>Service: repair instruction
+
+    loop repair_budget
+        Service->>Generator: repair_generation prompt with current candidate + validation summary
+        Generator-->>Service: repaired candidate
+        Service->>Validator: repaired candidate
+        Validator-->>Service: validation reports
+        Service->>Critic: validation reports
+        Critic-->>Service: finalize or repair
     end
 ```
 
-## Reading Notes
+## Notes
 
-- `Understanding` объединяет classification, context check, mode selection и
-  archetype selection.
-- `Critic` не пишет новый answer с нуля, а только формирует repair task.
-- bounded repair loop остаётся под управлением `Orchestrator`.
-- terminal outcomes ограничены: `success`, `clarification_requested`,
-  `bounded_failure`.
+- `planner` and `prompter` are LLM-backed agent layers.
+- `generator` is the only layer allowed to emit Lua.
+- `prompter` returns only additions, not a full prompt.
+- `repair_generation` goes directly to generator. There is no active `repair_prompter` stage in the current API path.
+- `deterministic_validation` is not an LLM layer.
+- `critic_report` decides whether to finalize or repair based on validator reports.
+- Generator stages use truncation guard and temporary files when `eval_count >= num_predict`.
+- `/generate/progress` streams progress events while the request is running; `/generate` returns one final JSON response.

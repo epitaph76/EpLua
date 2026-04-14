@@ -1,610 +1,285 @@
 # How Validation Works
 
-Этот документ фиксирует **текущее фактическое состояние** validation / generation pipeline в `luaMTS`.
+Этот документ описывает фактический validation / generation pipeline в текущем `luaMTS`.
 
-Актуальное состояние после упрощения:
-
-- рабочий контур сейчас намеренно сведён к **generator-only**;
-- старый `planner -> prompter -> generator -> validators -> critic -> repair loop` больше не является активным happy path;
-- следующие задачи должны быть сформулированы как **построение нового pipeline поверх стабильного generator baseline**, а не как точечная починка старого repair loop.
-
-Если этот документ расходится с кодом, source of truth для current behavior остаётся код.
-
-## 1. Current State
-
-### 1.1. API path
-
-Текущий API путь:
-
-1. `POST /generate` приходит в `apps/api/routes/generate.py`.
-2. Роут вызывает `GenerationService.generate(...)`.
-3. `GenerationService` строит единый LowCode prompt через `build_lowcode_generator_prompt(...)`.
-4. Модель вызывается через `model_adapter.generate_from_prompt(prompt)`.
-5. Ответ модели возвращается наружу без validation / critic / repair.
-
-Фактический trace:
-
-```text
-request_received -> generation -> response_ready
-```
-
-Фактический статус:
-
-```text
-validation_status = "not_run"
-stop_reason = "not_run"
-```
-
-Важно:
-
-- `archetype`, `output_mode`, `input_roots`, `risk_tags` сейчас не запускают старый quality loop;
-- `validator_report = null`;
-- `critic_report = null`;
-- `repair_count = 0`;
-- `clarification_count = 0`;
-- debug payload показывает prompt и model call, но не validator pass/fail.
-
-Ключевой файл:
+Если документ расходится с кодом, source of truth остаётся код:
 
 - `apps/api/services/generation.py`
-
-Ключевые функции:
-
-- `GenerationService.generate(...)`
-- `GenerationService._build_debug_payload(...)`
-
-### 1.2. CLI with-api path
-
-CLI `with-api` отправляет запрос в API и получает тот же generator-only результат.
-
-Для debug сейчас ожидаемо видеть:
-
-```text
-Pipeline Trace:
-request_received -> generation -> response_ready
-
-Agent Layers:
-generation:generator
-```
-
-При этом `Validation Passes` пустой, потому что validation ещё не построена заново.
-
-### 1.3. CLI without-api path
-
-CLI `without-api` идёт напрямую в Ollama `/api/generate`.
-
-Фактический trace:
-
-```text
-request_received -> direct_ollama -> response_ready
-```
-
-Фактический статус:
-
-```text
-validation_status = "not_run"
-```
-
-Это означает только то, что validation не запускалась. Модель при этом запускалась.
-
-Debug payload для `without-api` должен показывать:
-
-- `prompt_package.prompt`;
-- `pipeline_layers` со stage `direct_ollama`;
-- `model_calls[0].request_payload`;
-- `model_calls[0].raw_response`;
-- пустой `validation_passes`.
-
-Ключевой файл:
-
-- `apps/api/cli/main.py`
-
-Ключевые функции:
-
-- `_generate_without_api(...)`
-- `_print_pipeline_debug(...)`
-- `_print_literal(...)`
-
-Важно про вывод CLI:
-
-- сгенерированный код и debug JSON печатаются literal-выводом;
-- это нужно, чтобы Rich markup не съедал Lua-индексы вида `[#wf.vars.emails]`.
-
-### 1.4. Inline JSON и context
-
-CLI больше не должен автоматически отрезать хвостовой inline JSON из task text.
-
-Текущее правило:
-
-- если JSON написан прямо в строке задачи, он остаётся частью `task_text`;
-- если нужен отдельный context, используй `/context <json-or-path>` или `--context`;
-- сужение context по roots возможно только для явного context, а не для произвольной части task text.
-
-Это сделано, чтобы CLI не принимал семантические решения за пользователя и не менял prompt незаметно.
-
-## 2. Current LowCode Generator Contract
-
-Generator prompt собирается в:
-
 - `packages/orchestrator/prompter.py`
+- `packages/validators/core.py`
 
-Ключевая функция:
+## 1. API path
 
-- `build_lowcode_generator_prompt(task_text, provided_context)`
-
-Текущий глобальный контракт:
-
-- модель генерирует Lua 5.5 выражения / скрипты для LowCode;
-- ответ должен быть только JSON object;
-- каждое Lua-значение должно быть строкой формата `lua{<Lua код>}lua`;
-- нельзя добавлять markdown, пояснения, debug output, demonstration JSON или текст вокруг JSON object;
-- нельзя использовать JsonPath;
-- нельзя создавать новые поля внутри `wf.vars` или `wf.initVariables`, если пользователь явно не попросил изменить существующие данные;
-- если задача просит получить значение, Lua внутри `lua{...}lua` должен возвращать значение через `return`;
-- все LowCode-переменные лежат в `wf.vars`;
-- входные variables лежат в `wf.initVariables`;
-- для доступа к элементам существующего массива используется обычная Lua-индексация.
-
-Пример ожидаемого ответа для задачи “получи последний email”:
-
-```json
-{
-  "result": "lua{return wf.vars.emails[#wf.vars.emails]}lua"
-}
-```
-
-## 3. What Is Not Active Now
-
-Следующие части кода могут оставаться в репозитории, но сейчас не являются активным happy path для `/generate`:
-
-- `build_domain_prompt_package(...)`;
-- planner agent layer;
-- prompter agent layer;
-- `run_quality_loop(...)`;
-- format / syntax / static / principle validators;
-- runtime behavioral validation;
-- semantic critic;
-- deterministic repair tools;
-- repair loop;
-- bounded repair / oscillation policy.
-
-Их нельзя описывать как “текущий pipeline”, пока они снова явно не подключены и не подтверждены тестами.
-
-## 4. Why The Old Document Was Wrong
-
-Старый документ описывал фактический контур так, будто `/generate` уже проходит через:
+Основной путь:
 
 ```text
-build_domain_prompt_package -> run_quality_loop -> validators -> critic -> repair
+POST /generate
+-> apps/api/routes/generate.py
+-> GenerationService.generate(...)
 ```
 
-В текущей ветке это неверно.
-
-Правильный current-state:
+Live-progress путь:
 
 ```text
-raw task/context -> LowCode generator prompt -> model call -> raw model response
+POST /generate/progress
 ```
 
-Validation пока отсутствует как runtime decision layer.
-
-## 5. Source Files For Current State
-
-Открывай эти файлы, если нужно проверить фактическое поведение:
-
-| Что проверить | Файл |
-| --- | --- |
-| API entrypoint | `apps/api/routes/generate.py` |
-| API generator-only service | `apps/api/services/generation.py` |
-| LowCode generator prompt | `packages/orchestrator/prompter.py` |
-| CLI direct Ollama path | `apps/api/cli/main.py` |
-| Runtime options including temperature | `apps/api/runtime_policy.py` |
-| API schema for runtime options | `apps/api/schemas.py` |
-| Generator-only service regression | `apps/api/tests/test_quality_loop.py` |
-| CLI debug / direct Ollama / literal output regression | `apps/api/tests/test_cli.py` |
-
-## 6. Confirmed Tests
-
-Полезные тесты для текущего состояния:
-
-- `test_generation_service_uses_generator_only_lowcode_contract_without_agentic_layers`
-  - подтверждает, что `GenerationService` вызывает только generator prompt;
-  - подтверждает `validation_status = "not_run"`;
-  - подтверждает отсутствие agent calls и validation passes.
-- `test_cli_generate_without_api_debug_prints_ollama_request_payload`
-  - подтверждает debug payload для direct Ollama path.
-- `test_cli_chat_temperature_command_updates_status_and_direct_ollama_payload`
-  - подтверждает slash-команду `/temperature` и проброс в Ollama options.
-- `test_cli_literal_print_preserves_lua_length_index_markup`
-  - подтверждает, что CLI literal output не теряет `[#...]` из Lua-кода.
-- `test_cli_chat_keeps_inline_json_inside_task_text`
-  - подтверждает, что inline JSON больше не вырезается из task text.
-
-Команда для проверки:
-
-```powershell
-python -m pytest .\apps\api\tests -q
-```
-
-## 7. New Pipeline Goal
-
-Следующая большая задача: построить новый validation pipeline поверх generator-only baseline.
-
-Целевой принцип:
+`/generate/progress` отдаёт NDJSON events:
 
 ```text
-plan explicitly -> prompt explicitly -> generate -> validate deterministically -> critic decides -> repair with bounded retries
+{"type":"progress","stage":"planner","index":2}
+{"type":"final","payload":{...}}
 ```
 
-Новый pipeline должен быть:
+CLI в режиме `with-api` предпочитает `/generate/progress`, чтобы показывать слои во время работы API.
 
-- явным;
-- трассируемым;
-- тестируемым;
-- без silent mutation model output;
-- без хардкода под один пример;
-- без CLI-эвристик, которые заранее решают semantic intent за пользователя;
-- без скрытой “починки” candidate между generator и validator;
-- с bounded repair budget;
-- с truncation guard на каждом agentic этапе.
+## 2. Current pipeline
 
-Целевой полный контур:
+Happy path:
 
 ```text
 request_received
 -> planner
 -> prompter
--> generator
+-> generation
 -> deterministic_validation
--> critic
--> finalize | repair_prompting | clarification
+-> response_ready
 ```
 
-Если critic выбирает repair:
+Repair path:
 
 ```text
-critic_findings
+request_received
+-> planner
 -> prompter
--> generator
+-> generation
 -> deterministic_validation
--> critic
+-> repair_generation
+-> deterministic_validation
+-> response_ready
 ```
 
-Если после 4 прогонов candidate generation результат всё ещё невалидный или critic не может уверенно завершить задачу, pipeline должен остановиться и попросить уточнение у пользователя.
+`repair_prompter` в текущем API path не используется. Repair идёт напрямую в generator: prompt собирается локально из исходного prompt package, текущего candidate, validation report и critic instruction.
 
-Agentic truncation guard:
+## 3. Planner
 
-- применяется к `planner`, `prompter`, `generator`, `critic` и repair-вариантам этих шагов;
-- если agentic output упёрся в лимит `num_predict`, например `256` токенов, считать это подозрением на truncation;
-- такой output нельзя молча принимать как нормальный успех;
-- тот же agentic stage должен быть запущен заново с явной инструкцией сделать ответ короче и вернуть только минимально нужную структуру;
-- truncation retry должен быть ограниченным и трассируемым, чтобы не получить бесконечный цикл.
+Planner agent не генерирует Lua.
 
-## 8. Proposed Pipeline Stages
+Он возвращает компактный JSON со смыслом задачи:
 
-Ниже не описание текущей реализации, а target backlog.
+```json
+{
+  "arch": "transformation",
+  "op": "last_array_item",
+  "mode": "raw_lua",
+  "roots": ["wf.vars.emails"],
+  "shape": "scalar_or_nil",
+  "risks": ["array_indexing"],
+  "edges": ["single_item", "empty_array"],
+  "clar": false,
+  "q": null,
+  "intents": ["extract_last_email"]
+}
+```
 
-### Stage 0. Keep Generator Baseline
+Локальная обвязка разворачивает это в `TaskSpec`.
 
-Цель:
+## 4. Prompter
 
-- сохранить текущий generator-only path как baseline;
-- не ломать LowCode prompt contract;
-- не возвращать старый repair loop целиком как black box.
+Prompter agent тоже не генерирует Lua.
 
-Done criteria:
+Он получает:
 
-- `/generate` стабильно возвращает model response;
-- debug показывает prompt и raw response;
-- `validation_status = "not_run"` остаётся честным, пока новый pipeline не подключен.
+- `TaskSpec`;
+- task intents;
+- исходную задачу пользователя;
+- краткую сводку текущего generator prompt.
 
-### Stage 1. Planner Agent
+Он возвращает только patch-additions:
 
-Цель:
+```json
+{
+  "sys": ["короткая системная подсказка"],
+  "user": ["короткая пользовательская подсказка"]
+}
+```
 
-- вернуть planner как явный agentic слой, но без старых CLI-эвристик.
+Полный generator prompt собирается локально.
 
-Planner получает:
+Важное правило: prompter additions не имеют права противоречить LowCode-контракту. Добавки, которые просят `error()`, "бросить ошибку", "вернуть ошибку" и похожие инструкции, фильтруются и не попадают в prompt generator-а.
 
-- raw `task_text`;
-- raw или явно переданный `provided_context`;
-- structural facts, если они есть и явно помечены как facts/hints.
+## 5. Generator
 
-Planner возвращает компактный `TaskSpec`:
-
-- `operation`;
-- `output_mode`;
-- `input_roots`;
-- `expected_shape`;
-- `risk_tags`;
-- `edge_cases`;
-- `clarification_required`;
-- `clarification_question`.
-
-Не делать:
-
-- не генерировать Lua;
-- не принимать обрезанный output за успех;
-- не подменять пустой/битый planner output молчаливым semantic fallback.
-
-### Stage 2. Prompter Agent
-
-Цель:
-
-- собрать короткий и точный prompt для generator из `TaskSpec`, user task и context.
-
-Prompter получает:
-
-- `TaskSpec` от planner;
-- raw user task;
-- relevant context;
-- hard output contract.
-
-Prompter возвращает:
-
-- system/user prompt или короткие prompt sections для generator;
-- без Lua candidate;
-- без полного echo всего fallback prompt.
-
-Правило:
-
-- если prompter упёрся в `num_predict`, stage повторяется с требованием сократить output.
-
-### Stage 3. Generator Agent
-
-Цель:
-
-- получить candidate в текущем LowCode формате.
-
-Generator получает:
-
-- prompt от prompter;
-- task/context в достаточном для решения виде;
-- output contract.
-
-Generator возвращает:
-
-- только JSON object;
-- Lua-фрагменты только как JSON string values формата `lua{<Lua код>}lua`;
-- без markdown, prose, debug text, copied prompt text.
+Generator получает полный LowCode prompt и должен вернуть только JSON object.
 
 Пример:
 
 ```json
 {
-  "result": "lua{return wf.vars.emails[#wf.vars.emails]}lua"
+  "result": "lua{local emails = wf.vars.emails\nif not emails or #emails == 0 then\n  return nil\nend\nreturn emails[#emails]}lua"
 }
 ```
 
-Правило:
+В реальном raw JSON переносы внутри строки должны быть экранированы как `\\n`. CLI может показывать их как настоящие строки только в human view.
 
-- если generator output упёрся в `num_predict`, это не validator failure, а agentic truncation failure;
-- generator stage повторяется с указанием вернуть более короткий JSON candidate.
+## 6. Truncation guard
 
-### Stage 4. Deterministic Validation
+Для generator и repair-generation включён guard против обрезки на `num_predict`.
 
-Цель:
+Алгоритм:
 
-- проверить candidate неагентно перед critic.
+1. Перед каждым generator-stage создаётся временный файл.
+2. Первый chunk ответа пишется в этот файл.
+3. Если metadata показывает `eval_count >= num_predict`, считается, что вывод мог быть обрезан.
+4. Pipeline строит continuation prompt:
+   - исходный prompt;
+   - уже полученный fragment;
+   - инструкция дописать недостающую часть без повторения лишнего.
+5. Следующий chunk добавляется в тот же временный файл.
+6. Цикл продолжается, пока chunk не станет короче лимита или пока не достигнут внутренний лимит продолжений.
+7. Полный текст из временного файла идёт в deterministic validation.
+8. После финального статуса задачи временные файлы удаляются.
 
-Проверять outer contract:
+Для repair-generation создаётся отдельный временный файл, потому что это новый generator-stage с новым prompt.
 
-- ответ является JSON object;
-- все generated Lua values являются JSON strings;
-- Lua strings обёрнуты в `lua{...}lua`;
-- нет markdown;
-- нет текста до или после JSON object;
-- нет `print` / debug output;
-- Lua fragment использует `return`, если задача просит получить значение.
+В debug model call guard отображается так:
 
-Проверять Lua syntax:
-
-- извлечь каждый `lua{...}lua` fragment;
-- проверить, что Lua fragment синтаксически валиден;
-- не исполнять код на этом этапе;
-- не использовать LLM для синтаксической проверки.
-
-Не делать:
-
-- не чинить ответ автоматически;
-- не запускать repair;
-- не менять candidate перед validator;
-- не хардкодить `emails`.
-
-Минимальный результат:
-
-```text
-request_received -> planner -> prompter -> generator -> deterministic_validation
+```json
+{
+  "truncation_guard": {
+    "continuation_count": 1,
+    "limit_reached": false,
+    "chunks": [
+      {"index": 1, "truncated": true, "eval_count": 256, "num_predict": 256},
+      {"index": 2, "truncated": false, "eval_count": 108, "num_predict": 256}
+    ],
+    "temporary_file_used": true
+  }
+}
 ```
 
-### Stage 5. Critic Decision Layer
+## 7. Deterministic validation
 
-Цель:
+Validation pipeline запускается для output mode `LOWCODE_JSON`.
 
-- добавить отдельный decision layer поверх validator reports.
+Слои:
 
-Critic получает:
+1. `format_validator`
+   - outer JSON должен быть валидным JSON object;
+   - все Lua-значения должны быть строками `lua{...}lua`;
+   - без markdown и prose вокруг JSON.
+2. `syntax_validator`
+   - извлекает Lua-сегменты;
+   - проверяет базовую Lua-структуру;
+   - использует `stylua`, если он доступен.
+3. `static_validator`
+   - использует `luacheck`, если он доступен;
+   - проверяет path/root restrictions;
+   - ловит forbidden patterns.
+4. `principle_validator`
+   - проверяет проектные LowCode-principles.
+5. `rule_validator`
+   - агрегирует format/syntax/static/principle findings в итоговый rule report.
 
-- `TaskSpec`;
-- raw candidate от generator;
-- deterministic validator reports;
-- номер текущего прогона;
-- историю предыдущих failures, если это repair iteration.
+Если format validation падает, остальные слои пропускаются, потому что Lua-сегменты ещё нельзя безопасно извлечь.
 
-Critic решает:
+## 8. Critic report and repair
+
+`critic_report` принимает структурированные отчёты validators и выбирает действие:
 
 - `finalize`;
 - `repair`;
-- `clarification`;
-- `bounded_failure`.
+- bounded failure / stop.
 
-Важно:
+Repair prompt строится локально:
 
-- critic не должен скрывать validator failure;
-- critic не должен чинить candidate сам;
-- critic должен вернуть structured findings для prompter, если выбран `repair`;
-- если critic output упёрся в `num_predict`, critic stage повторяется с требованием короткого structured decision.
+- исходная задача;
+- `TaskSpec`;
+- текущий невалидный candidate;
+- краткий validation report;
+- critic instruction.
 
-### Stage 6. Repair Prompting And Bounded Loop
+Дальше вызывается `repair_generation`, а не отдельный repair LLM-agent.
 
-Цель:
+## 9. Status semantics
 
-- вернуть repair только после того, как есть явные validator reports.
+Возможные итоговые статусы:
 
-Repair flow:
+- `passed` - первая генерация прошла validation;
+- `repaired` - validation прошла после repair;
+- `failed` - repair budget исчерпан или ошибка неремонтируемая;
+- `not_run` - только для прямых путей, где validation намеренно не запускается.
 
-```text
-critic findings -> prompter repair prompt -> generator repaired candidate -> deterministic_validation -> critic
-```
+`stop_reason` уточняет причину:
 
-Prompter на repair iteration получает:
+- `passed`;
+- `deterministic_validation_failed`;
+- `repair_exhausted`;
+- другие bounded stop reasons.
 
-- исходный `TaskSpec`;
-- текущий invalid candidate;
-- validator findings;
-- critic findings;
-- короткую инструкцию, что именно исправить.
+## 10. CLI display
 
-Правила budget:
+Важно различать raw data и human view.
 
-- repair prompt должен получать компактный structured failure summary;
-- repair iteration должна добавлять trace entry;
-- максимум 4 прогона candidate generation;
-- если после 4 прогонов не получилось, остановиться и попросить уточнение у пользователя;
-- repeated failure / oscillation должны быть отдельными stop reasons;
-- deterministic repairs не добавлять на первом этапе нового pipeline.
+Внутри API и validator candidate остаётся чистой JSON-строкой с `\\n`.
 
-Не делать:
+CLI для основного результата делает human view:
 
-- не восстанавливать старый `repair_loop.py` как black box;
-- не чинить model output перед validation без report;
-- не смешивать cleanup, validation и repair в одном helper'е.
+- `\\n` показывает как реальные строки;
+- `\"` показывает как `"`;
+- это только отображение, не вход validator-а.
 
-### Stage 7. Observability And Metrics
+Debug JSON печатается без глобальной замены `\\n`, чтобы отчёт оставался похож на настоящий JSON и не создавал ложные хвостовые `\`.
 
-Цель:
+## 11. Debug artifacts
 
-- сделать debug trail достаточным для расследования каждого решения.
+Debug response содержит:
 
-Debug должен показывать:
+- `trace`;
+- `validator_report`;
+- `critic_report`;
+- `repair_count`;
+- `debug.prompt_package`;
+- `debug.pipeline_layers`;
+- `debug.agent_layer_calls`;
+- `debug.model_calls`;
+- `debug.validation_passes`.
 
-- prompt package;
-- raw model response;
-- каждый agentic stage;
-- каждый deterministic validation stage;
-- статус каждого stage;
-- findings;
-- truncation retries;
-- repair prompt, если repair был;
-- final decision и stop reason.
-
-## 9. Task Backlog
-
-Актуальные задачи теперь такие:
-
-1. Зафиксировать generator-only baseline.
-   - Статус: done in current branch.
-   - Проверка: generator-only тесты и debug trace.
-
-2. Вернуть `planner` как явный agentic stage.
-   - Статус: next.
-   - Минимальный scope: planner возвращает compact `TaskSpec`, без Lua.
-
-3. Вернуть `prompter` как явный agentic stage.
-   - Статус: pending.
-   - Минимальный scope: prompter строит короткий generator prompt из `TaskSpec`.
-
-4. Подключить `generator` к prompter output.
-   - Статус: pending.
-   - Минимальный scope: generator возвращает JSON object с `lua{...}lua`.
-
-5. Добавить deterministic validation.
-   - Статус: pending.
-   - Минимальный scope: JSON object + `lua{...}lua` string leaves + Lua syntax check.
-
-6. Добавить critic decision layer.
-   - Статус: pending.
-   - Минимальный scope: choose finalize / repair / clarification from validator reports.
-
-7. Добавить repair loop через prompter.
-   - Статус: pending.
-   - Минимальный scope: critic findings -> prompter repair prompt -> generator, max 4 generation passes.
-
-8. Добавить truncation guard на agentic stages.
-   - Статус: pending.
-   - Минимальный scope: если output ровно упёрся в `num_predict=256`, retry того же stage с "сделай короче".
-
-9. Добавить metrics / regression suite.
-   - Статус: pending.
-   - Минимальный scope: compare generator-only baseline vs validated pipeline on типовые запросы.
-
-## 10. Non-goals For The Next Slice
-
-Для следующего шага не нужно:
-
-- возвращать весь старый `run_quality_loop(...)`;
-- чинить старый `_prepare_candidate_for_validation(...)`;
-- добавлять silent cleanup;
-- добавлять task-specific hacks для `emails`;
-- заставлять CLI парсить смысл задачи;
-- делать repair до появления validator reports;
-- добавлять runtime behavioral validation до базовой deterministic validation.
-
-## 11. Smallest Viable Next Slice
-
-Самый маленький полезный следующий шаг:
+Live progress в CLI показывает:
 
 ```text
-generator-only baseline -> planner -> prompter -> generator
+Debug progress:
+  слой 1: request_received прошёл
+  слой 2: planner прошёл
+  слой 3: prompter прошёл
+  слой 4: generation прошёл
+  слой 5: deterministic_validation прошёл
+  слой 6: response_ready прошёл
 ```
 
-Минимальные файлы для чтения:
+## 12. LowCode hard rules
 
-- `apps/api/services/generation.py`
-- `packages/orchestrator/prompter.py`
-- `packages/orchestrator/planner.py`
-- `apps/api/schemas.py`
-- `apps/api/tests/test_quality_loop.py`
+Проектные правила:
 
-Минимальные файлы для изменения:
+- Lua 5.5-compatible style;
+- script string format: `lua{...}lua`;
+- JsonPath запрещён;
+- все LowCode variables: `wf.vars`;
+- init variables: `wf.initVariables`;
+- новый массив: `_utils.array.new()`;
+- существующий массив при необходимости: `_utils.array.markAsArray(arr)`;
+- `error()` запрещён в LowCode JSON output.
 
-- `apps/api/services/generation.py`;
-- `packages/orchestrator/planner.py`;
-- `packages/orchestrator/prompter.py`;
+## 13. Useful tests
+
+```powershell
+python -m pytest apps\api\tests packages\benchmark\tests -q
+```
+
+Фокусные тесты:
+
 - `apps/api/tests/test_quality_loop.py`;
-- при необходимости `apps/api/schemas.py`.
-
-Минимальное поведение:
-
-- debug показывает `planner`, `prompter`, `generator`;
-- generator получает prompt от prompter, а не старый monolithic fallback prompt;
-- response пока может оставаться без full validation, если deterministic validation ещё не подключена в этом slice;
-- agentic stages имеют явный план для truncation guard, даже если сам guard добавляется следующим slice.
-
-## 12. Operational Summary
-
-Текущий контур:
-
-```text
-/generate -> GenerationService.generate -> build_lowcode_generator_prompt -> generate_from_prompt -> response_ready
-```
-
-Целевой следующий контур:
-
-```text
-/generate -> planner -> prompter -> generator -> response_ready
-```
-
-Целевой полный контур после следующих slices:
-
-```text
-/generate -> planner -> prompter -> generator -> deterministic_validation -> critic -> finalize
-```
-
-Repair ветка:
-
-```text
-critic -> prompter(repair) -> generator(repair) -> deterministic_validation -> critic
-```
-
-После 4 неудачных прогонов pipeline должен просить уточнение у пользователя, а не крутиться бесконечно.
+- `apps/api/tests/test_validator_tools.py`;
+- `apps/api/tests/test_cli.py`;
+- `apps/api/tests/test_prompter.py`;
+- `packages/benchmark/tests/test_run_lua_7_progon_benchmark.py`.

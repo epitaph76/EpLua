@@ -347,7 +347,14 @@ def validate_static(
     lua_segments = _extract_lua_segments(candidate, output_mode)
     findings: list[ValidationFinding] = []
     findings.extend(_validate_paths(lua_segments, allowed_data_roots))
-    findings.extend(_validate_forbidden_patterns(candidate, lua_segments, forbidden_patterns))
+    findings.extend(
+        _validate_forbidden_patterns(
+            candidate,
+            lua_segments,
+            forbidden_patterns,
+            output_mode=output_mode,
+        )
+    )
 
     if not findings and output_mode == RAW_LUA:
         luacheck_report = _run_luacheck(lua_segments)
@@ -534,6 +541,8 @@ def _validate_forbidden_patterns(
     candidate: str,
     lua_segments: list[tuple[str, str]],
     forbidden_patterns: tuple[str, ...],
+    *,
+    output_mode: str,
 ) -> list[ValidationFinding]:
     findings: list[ValidationFinding] = []
 
@@ -579,6 +588,19 @@ def _validate_forbidden_patterns(
                     location=location,
                     repairable=True,
                     suggestion="Remove print/debug output and return only the requested value.",
+                )
+            )
+            return findings
+
+        if output_mode == LOWCODE_JSON and re.search(r"\berror\s*\(", segment):
+            findings.append(
+                ValidationFinding(
+                    validator="forbidden_patterns_validator",
+                    failure_class="runtime_error_call",
+                    message="LowCode Lua output must not throw runtime errors with error().",
+                    location=location,
+                    repairable=True,
+                    suggestion="Return nil, false, or an empty string instead of throwing an error.",
                 )
             )
             return findings

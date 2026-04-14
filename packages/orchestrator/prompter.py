@@ -16,6 +16,7 @@ LOWCODE_LUA_FORBIDDEN_PATTERNS = (
     "markdown",
     "пояснения вне JSON object",
     "print/debug output",
+    "error()",
     "JsonPath",
 )
 
@@ -236,6 +237,7 @@ def build_lowcode_prompter_agent_prompt(
             "Текущий generator prompt уже содержит жёсткий LowCode-контракт, ограничения и формат ответа.",
             "Не переписывай и не повторяй полный generator prompt.",
             "Верни только короткие добавления, которые помогут generator точнее решить задачу.",
+            "Не добавляй подсказки, которые просят бросать/возвращать ошибку или вызывать error().",
             "Пиши добавления на русском языке.",
             'Форма ответа: {"sys":["короткая системная подсказка"],"user":["короткая пользовательская подсказка"]}',
         ]
@@ -478,6 +480,9 @@ def _apply_prompt_patch_payload(
 ) -> PromptBuilderResult | None:
     system_additions = _string_list_from_payload(payload, "sys", "system_additions", "system_hints")
     user_additions = _string_list_from_payload(payload, "user", "user_additions", "user_hints")
+    if fallback_result.forbidden_patterns == LOWCODE_LUA_FORBIDDEN_PATTERNS:
+        system_additions = _filter_lowcode_prompt_additions(system_additions)
+        user_additions = _filter_lowcode_prompt_additions(user_additions)
     if not system_additions and not user_additions:
         return None
 
@@ -521,6 +526,30 @@ def _string_list_from_payload(payload: dict[str, Any], *keys: str) -> list[str]:
             if isinstance(item, str) and item.strip() and item.strip() not in values:
                 values.append(item.strip())
     return values
+
+
+def _filter_lowcode_prompt_additions(additions: list[str]) -> list[str]:
+    return [addition for addition in additions if not _conflicts_with_lowcode_contract(addition)]
+
+
+def _conflicts_with_lowcode_contract(addition: str) -> bool:
+    normalized = addition.casefold()
+    conflict_markers = (
+        "error(",
+        "error()",
+        "throw error",
+        "throws error",
+        "raise error",
+        "runtime error",
+        "бросай ошиб",
+        "бросить ошиб",
+        "выброси ошиб",
+        "выбрасывай ошиб",
+        "кидай ошиб",
+        "верни ошиб",
+        "возвращай ошиб",
+    )
+    return any(marker in normalized for marker in conflict_markers)
 
 
 def _prompter_fallback(fallback_result: PromptBuilderResult, reason: str) -> PromptBuilderResult:
@@ -701,6 +730,7 @@ def _lowcode_lua_system_prompt() -> str:
                     "добавлять print/debug output;",
                     "добавлять демонстрационный JSON;",
                     "писать текст до или после JSON object;",
+                    "вызывать error() или намеренно ронять выполнение; если вход некорректен, верни nil, false или пустую строку по смыслу задачи;",
                     "использовать JsonPath;",
                     "создавать новые поля внутри wf.vars или wf.initVariables, если пользователь явно не попросил изменить существующие данные.",
                 ]

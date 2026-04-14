@@ -1,280 +1,176 @@
-# CLI Client Plan
+# CLI Client
 
-Этот документ описывает отдельный CLI-клиент для LocalScript Agent. CLI должен быть тонким клиентом поверх текущего API и Ollama runtime, а не вторым orchestrator.
+`luamts` - тонкий CLI поверх API и Ollama runtime. Он не является вторым orchestrator: основной pipeline живёт в API.
 
-Цель: дать красивый terminal UX для демо и разработки, при этом явно закрыть требования конкурса по локальности, фиксированным runtime-параметрам и воспроизводимости.
+## Режимы
 
-## 1. Роли CLI
+### Release
 
-CLI должен поддерживать два режима:
+Release mode нужен для демо и проверки.
 
-- `debug` - режим разработки и сравнения моделей.
-- `release` - официальный демо-режим с фиксированными ограничениями.
+Свойства:
 
-Оба режима используют локальный Ollama endpoint. Внешние AI API не используются.
+- cloud model tags запрещены;
+- `--allow-cloud-model` запрещён;
+- runtime options фиксированы компактно;
+- API запускает полный validation pipeline;
+- вывод минимальный: статус и результат.
 
-## 2. Release Mode
-
-Release mode должен быть дефолтным для конкурсного демо.
-
-Команда:
-
-```powershell
-luamts generate --mode release --task "..." --context context.json
-```
-
-Release mode обязан:
-
-- требовать локальный Ollama endpoint: `http://127.0.0.1:11434`, `http://localhost:11434`, `http://ollama:11434` или другой явно разрешенный local host;
-- запрещать model tags с суффиксом `-cloud`, например `qwen3-coder:480b-cloud` и `gpt-oss:20b-cloud`;
-- использовать только выбранный финальный local/open-source model tag;
-- передавать в Ollama фиксированные параметры:
-  - `num_ctx=4096`;
-  - `num_predict=256`;
-  - `batch=1`;
-  - `parallel=1`;
-- сохранять `debug=false` по умолчанию;
-- запускать API quality loop: generation -> validation -> semantic/rule checks -> repair или clarification -> final output;
-- выводить только финальный Lua-код и короткий статус;
-- сохранять полный trace в локальный report-файл, если указан `--report`.
-
-Финальная модель пока не фиксируется этим документом. Перед сдачей нужно заменить placeholder на выбранный tag:
-
-```powershell
-ollama pull <FINAL_LOCAL_MODEL_TAG>
-```
-
-Пример после выбора модели:
-
-```powershell
-$env:OLLAMA_MODEL='<FINAL_LOCAL_MODEL_TAG>'
-$env:OLLAMA_BASE_URL='http://127.0.0.1:11434'
-$env:OLLAMA_NUM_CTX='4096'
-$env:OLLAMA_NUM_PREDICT='256'
-$env:OLLAMA_BATCH='1'
-$env:OLLAMA_PARALLEL='1'
-luamts generate --mode release --task "Из массива emails верни последний email."
-```
-
-Важно: release mode не должен позволять переопределить эти параметры через CLI flags. Если нужен эксперимент, используется debug mode.
-
-## 3. Debug Mode
-
-Debug mode нужен для локальной разработки, bake-off моделей и анализа validator/repair поведения.
-
-Команда:
-
-```powershell
-luamts generate --mode debug --model qwen2.5-coder:7b --num-ctx 4096 --num-predict 256 --batch 1 --parallel 1 --task "..."
-```
-
-Debug mode может:
-
-- выбирать локальную модель через `--model`;
-- менять параметры:
-  - `--num-ctx`;
-  - `--num-predict`;
-  - `--batch`;
-  - `--parallel`;
-- включать подробный trace через `--debug-trace`;
-- сохранять model calls, prompt package, validation passes и critic reports;
-- запускать один и тот же task в двух сценариях:
-  - `--without-api` - прямой prompt в Ollama без quality loop;
-  - `--with-api` - через `/generate` и полный quality loop;
-- писать JSON report в `artifacts/benchmark_runs/`.
-
-Debug mode может использовать cloud Ollama tags для разработки, bake-off и диагностики качества. Это должно быть явно видно в команде и в имени отчёта, чтобы результаты не смешивались с release/submit контуром:
-
-```powershell
-luamts generate --mode debug --model gpt-oss:20b-cloud --allow-cloud-model
-```
-
-`--allow-cloud-model` разрешён только в debug mode. Этот флаг нельзя использовать в release mode, benchmark submit mode и README demo command.
-
-## 4. CLI Commands
-
-Минимальный набор команд:
+Параметры:
 
 ```text
+num_ctx=4096
+num_predict=256
+batch=1
+parallel=1
+num_gpu=-1
+```
+
+`num_gpu=-1` применяется только в release mode, чтобы не использовать CPU offload.
+
+### Debug
+
+Debug mode нужен для разработки, анализа prompt package, model calls, validator reports и repair behavior.
+
+Свойства:
+
+- можно менять model tag;
+- можно менять `num_ctx`, `num_predict`, `batch`, `temperature`;
+- можно разрешить cloud tags через `--allow-cloud-model`;
+- GPU-only ограничение release mode не применяется;
+- выводится live progress по слоям pipeline.
+
+Пример:
+
+```powershell
+luamts generate --mode debug --model qwen3-coder:480b-cloud --allow-cloud-model --debug-trace --task "..."
+```
+
+## Команды
+
+```text
+luamts doctor
 luamts generate
 luamts bench
-luamts doctor
 luamts vram-check
+luamts
 ```
 
-`luamts generate`:
+## Interactive mode
 
-- принимает natural language task;
-- принимает context как inline JSON или путь к JSON-файлу;
-- вызывает API `/generate` или прямой Ollama path для `--without-api`;
-- красиво показывает trace:
-  - request;
-  - generation;
-  - validation;
-  - repair;
-  - finalize;
-- печатает финальный Lua-код.
+Запуск:
 
-`luamts bench`:
-
-- запускает выборку benchmark cases;
-- фиксирует model tag, runtime params, seed и scenario;
-- пишет отдельные отчёты для `with-api` и `without-api`;
-- запрещает cloud tags в release/submit mode.
-
-`luamts doctor`:
-
-- проверяет доступность Ollama;
-- проверяет доступность API;
-- показывает выбранную модель;
-- показывает effective runtime params;
-- проверяет, что model tag не cloud в release mode;
-- проверяет наличие локальных knowledge/templates;
-- предупреждает, если README/runtime params расходятся.
-
-`luamts vram-check`:
-
-- запускает эталонный запрос организаторов или локальный smoke prompt;
-- фиксирует параметры:
-  - `num_ctx=4096`;
-  - `num_predict=256`;
-  - `batch=1`;
-  - `parallel=1`;
-- собирает peak VRAM через `nvidia-smi`;
-- пишет `docs/VRAM_BENCHMARK.md`;
-- падает, если `nvidia-smi` недоступен или peak VRAM больше `8.0 GB`.
-
-## 5. Required API/Runtime Changes
-
-Чтобы CLI реально закрывал требования, текущий runtime нужно доработать.
-
-### 5.1. Ollama options must be enforced
-
-Сейчас model adapter отправляет:
-
-```json
-{
-  "model": "...",
-  "prompt": "...",
-  "stream": false
-}
+```powershell
+luamts
 ```
 
-Нужно отправлять:
+Slash-команды:
 
-```json
+```text
+/debug
+/release
+/model <tag>
+/model n
+/allow-cloud on
+/allow-cloud off
+/repair-budget <number>
+/with-api
+/without-api
+/exit
+```
+
+`/model n` возвращает стандартную модель.
+
+`/repair-budget 2` задаёт количество generator-pass попыток в API quality loop. По умолчанию используется `2`.
+
+## Multiline input
+
+Интерактивный ввод поддерживает многострочную вставку JSON-контекста. Это нужно, чтобы можно было вставить большой объект:
+
+```text
+Преобразуй DATUM и TIME в ISO 8601.
 {
-  "model": "<MODEL>",
-  "prompt": "<PROMPT>",
-  "stream": false,
-  "options": {
-    "num_ctx": 4096,
-    "num_predict": 256,
-    "batch": 1
+  "wf": {
+    "vars": {
+      "json": {
+        "IDOC": {
+          "ZCDF_HEAD": {
+            "DATUM": "20231015",
+            "TIME": "153000"
+          }
+        }
+      }
+    }
   }
 }
 ```
 
-`parallel=1` должен быть зафиксирован на уровне Ollama serve/runtime configuration, потому что это не обычная per-request generation option в том же смысле, что `num_ctx` и `num_predict`.
+CLI отправит задачу в API как один запрос.
 
-### 5.2. Cloud model guard
+## With API / without API
 
-Нужно добавить guard:
-
-```text
-release mode: reject model tag matching /(^|[:_-])cloud($|[:_-])|-cloud$/
-debug mode: allow cloud tags only with --allow-cloud-model
-```
-
-Это закрывает риск, что локальный `OLLAMA_BASE_URL` всё равно проксирует cloud model в конкурсном контуре, но оставляет debug mode удобным для экспериментов.
-
-### 5.3. Final model tag
-
-Нужно заменить provisional model в документации и env defaults:
+`with-api` - основной режим. Запрос идёт в `/generate` или `/generate/progress`, где работают:
 
 ```text
-qwen2.5-coder:3b -> <FINAL_LOCAL_MODEL_TAG>
+planner -> prompter -> generator -> deterministic_validation -> optional repair_generation
 ```
 
-Финальный tag должен быть выбран после VRAM benchmark.
+`without-api` - прямой вызов Ollama для диагностики prompt/model behavior. Validation pipeline в этом режиме не запускается.
 
-### 5.4. Benchmark default model
+## Output rendering
 
-`scripts/run_full_benchmark_report.py` не должен иметь cloud model default. Default должен быть:
+CLI различает:
+
+- raw candidate для API/validator;
+- human view для пользователя.
+
+Основной результат печатается человекочитаемо:
+
+- `\n` разворачивается в строки;
+- `\"` показывается как `"`;
+- Rich markup отключён, чтобы Lua-индексы вида `[#items]` не ломались.
+
+Debug JSON печатается без глобальной замены `\n`, чтобы отчёты `model_calls` и `validation_passes` оставались пригодны для анализа.
+
+## Live progress
+
+В debug mode CLI печатает слои во время работы API:
 
 ```text
-OLLAMA_MODEL или <FINAL_LOCAL_MODEL_TAG>
+Debug progress:
+  слой 1: request_received прошёл
+  слой 2: planner прошёл
+  слой 3: prompter прошёл
+  слой 4: generation прошёл
+  слой 5: deterministic_validation прошёл
+  слой 6: response_ready прошёл
 ```
 
-Если model tag cloud, release/submit benchmark должен падать.
+В release mode используется минимальный индикатор ожидания и итоговый статус.
 
-### 5.5. Retrieval/templates documentation
+## Docker usage
 
-README должен честно описывать текущий локальный слой:
+CLI доступен внутри API-контейнера:
 
-- `packages/retrieval/selector.py`;
-- `knowledge/templates/domain_prompt_templates.json`;
-- `knowledge/examples/*.json`;
-- `knowledge/archetypes/*.json`.
-
-Если retrieval включён в prompt package, он считается частью поставки и должен оставаться локальным.
-
-## 6. UX Shape
-
-CLI должен быть похож на современный coding-agent terminal UI, но без переноса чужого orchestration layer.
-
-Предпочтительный стек:
-
-```text
-Python + rich
+```bash
+docker compose exec api luamts doctor
+docker compose exec api luamts generate --mode release --task "Из массива emails верни последний email." --context '{"wf":{"vars":{"emails":["a@example.com","b@example.com"]}}}'
+docker compose exec api luamts
 ```
 
-Почему:
+## Debug cloud example
 
-- проект уже Python;
-- легко красиво показать panels, tables, progress и syntax-highlighted Lua;
-- не нужно тащить Node/Ink runtime только ради CLI;
-- проще запускать в том же окружении, что API tests и benchmark scripts.
+Cloud mode не является release-сценарием. Для локальной диагностики:
 
-Пример вывода:
+PowerShell:
 
-```text
-LocalScript Agent
-Mode: release
-Model: <FINAL_LOCAL_MODEL_TAG>
-Params: num_ctx=4096 num_predict=256 batch=1 parallel=1
-
-[generation] ok
-[format] ok
-[rule] ok
-[semantic] repaired
-[finalize] ok
-
-Lua:
-return wf.vars.emails[#wf.vars.emails]
+```powershell
+$env:OLLAMA_NO_CLOUD='0'
+luamts generate --mode debug --model qwen3-coder:480b-cloud --allow-cloud-model --task "..."
 ```
 
-В debug mode дополнительно:
+macOS / Linux:
 
-```text
-Repair count: 1
-Critic failure: semantic_mismatch
-Final candidate source: current_candidate
-Report: artifacts/benchmark_runs/<timestamp>_<model>_debug-report.json
+```bash
+OLLAMA_NO_CLOUD=0 luamts generate --mode debug --model qwen3-coder:480b-cloud --allow-cloud-model --task "..."
 ```
-
-## 7. Compliance Checklist
-
-Перед тем как считать CLI готовым к демо:
-
-- [ ] выбран `<FINAL_LOCAL_MODEL_TAG>`;
-- [ ] README содержит точный `ollama pull <FINAL_LOCAL_MODEL_TAG>`;
-- [ ] release mode запрещает cloud tags;
-- [ ] debug mode разрешает cloud tags только через явный `--allow-cloud-model`;
-- [ ] API/model adapter передаёт fixed Ollama options;
-- [ ] `parallel=1` зафиксирован в runtime instruction;
-- [ ] `docs/VRAM_BENCHMARK.md` содержит peak VRAM при `num_ctx=4096`, `num_predict=256`, `batch=1`, `parallel=1`;
-- [ ] `luamts doctor` проходит без warning в release mode;
-- [ ] `luamts vram-check` подтверждает `<= 8.0 GB VRAM`;
-- [ ] README описывает локальные templates/retrieval;
-- [ ] benchmark tooling не имеет cloud model default.

@@ -1,81 +1,52 @@
-# OUTPUT MODES
+# Output Modes
 
-## Назначение
+Output mode описывает доменную форму результата, а transport envelope API остаётся отдельным.
 
-Этот документ фиксирует **режимы ответа** для `S-1`.
-Они независимы от task archetypes и не должны использоваться как замена archetype-классификации.
+В текущем API `/generate` наружу всегда возвращается `GenerateResponse`, где поле `code` содержит строку результата. Внутри active LowCode pipeline generator по умолчанию возвращает доменный JSON object со строками `lua{...}lua`, даже если `TaskSpec.output_mode` называется `raw_lua`.
 
-## Canonical Modes
+## Active LowCode JSON contract
 
-| Mode ID | Когда нужен | Что считается корректным ответом |
-| --- | --- | --- |
-| `raw_lua` | нужно вернуть чистый Lua-фрагмент | только Lua, без prose, markdown и служебного текста |
-| `json_wrapper` | результат должен прийти как JSON-объект с Lua внутри полей | валидный JSON-объект, где значения с кодом обёрнуты в `lua{...}lua` |
-| `patch_mode` | нужно локально дополнить или обновить существующий payload | additive JSON payload только с нужными полями, без полного переписывания |
-| `clarification` | без уточнения высок риск ошибки | полезный вопрос к пользователю вместо догадки |
+Текущий обязательный контракт generator-а:
 
-## Orthogonality Rule
+```json
+{
+  "result": "lua{return wf.vars.value}lua"
+}
+```
 
-Task archetype отвечает на вопрос "что делаем", а output mode отвечает на вопрос "как возвращаем ответ".
+Правила:
 
-Примеры:
+- outer shape: JSON object;
+- Lua values: JSON strings;
+- Lua wrapper: `lua{...}lua`;
+- переносы внутри JSON string: `\\n`;
+- без markdown/prose вокруг object.
 
-- `datetime_conversion` может вернуться как `raw_lua`.
-- `datetime_conversion` может вернуться как `json_wrapper`.
-- `transformation` может вернуться как `patch_mode`.
+CLI может показывать этот результат человекочитаемо с настоящими переносами строк, но validator получает raw JSON.
 
-## `raw_lua`
+## Historical/canonical modes
 
-Требования:
+Эти mode names остаются в `TaskSpec` и документации:
 
-- вернуть только Lua-код;
-- не добавлять markdown fences;
-- не добавлять комментарии от ассистента вне Lua;
-- не смешивать raw Lua с JSON в одном ответе.
+| Mode ID | Meaning |
+| --- | --- |
+| `raw_lua` | задача просит Lua-вычисление/скрипт как результат |
+| `json_wrapper` | результат должен быть JSON object с Lua-строками |
+| `patch_mode` | additive payload для изменения существующего объекта |
+| `clarification` | вопрос пользователю вместо кода |
 
-## `json_wrapper`
+В текущем LowCode API path `raw_lua` не означает, что model response будет голым Lua без JSON. Он означает, что доменный результат - Lua-код, но transport для generator-а остаётся LowCode JSON object.
 
-Требования:
+## Validation implications
 
-- outer shape должен быть валидным JSON-объектом;
-- поля объекта определяются задачей, а не фиксированным глобальным ключом;
-- каждое поле с Lua-кодом должно содержать строку вида `lua{...}lua`;
-- wrapper должен быть корректно экранирован как JSON-строка.
+Для active path validators используют `LOWCODE_JSON`:
 
-Важно:
+- сначала проверяется JSON;
+- затем извлекаются `lua{...}lua` segments;
+- после этого запускаются Lua/static/rule checks.
 
-- `json_wrapper` не означает один жёсткий contract вроде `{"code":"..."}`.
-- Архивный OpenAPI baseline показывает текущий transport-level envelope `/generate -> {"code": string}`, но этот envelope не заменяет доменный `json_wrapper`.
+Если outer JSON невалиден, Lua-синтаксис не проверяется, потому что Lua-сегменты нельзя безопасно извлечь.
 
-## `patch_mode`
+## Clarification
 
-Требования:
-
-- вернуть только additive update payload;
-- включать только поля, которые нужно добавить или изменить;
-- не переписывать весь объект, если достаточно локального дополнения;
-- значения с кодом могут использовать тот же `lua{...}lua` wrapper, что и `json_wrapper`.
-
-На этапе `S-1` `patch_mode` трактуется именно как **additive payload**, а не как:
-
-- текстовый diff;
-- произвольный patch engine;
-- переписывание всей структуры "на всякий случай".
-
-## `clarification`
-
-Требования:
-
-- не генерировать код, если вход недостаточен;
-- вернуть конкретный уточняющий вопрос;
-- явно сигнализировать, что без уточнения высок риск неверного ответа.
-
-Примечание: в публичной PDF-выборке benchmark-case для `clarification` нет, но mode нужен как часть канонической схемы для downstream stages.
-
-## Public-Selection Baseline
-
-По публичной выборке подтверждены следующие практические формы:
-
-- `raw_lua` для кейсов прямой генерации;
-- `json_wrapper` для объектного ответа с `lua{...}lua`;
-- `patch_mode` для additive object update в кейсе дополнения существующего кода.
+Clarification mode остаётся допустимым design path, но текущий основной benchmark и CLI examples ориентированы на генерацию Lua-кода.
