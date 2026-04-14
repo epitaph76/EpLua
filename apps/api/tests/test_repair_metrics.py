@@ -2,13 +2,12 @@ import json
 import sys
 from pathlib import Path
 
-from services.generation import GenerationService
-
 REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.append(str(REPO_ROOT))
 
 from packages.orchestrator.domain_adapter import build_domain_prompt_package  # noqa: E402
+from packages.orchestrator.repair_loop import run_quality_loop  # noqa: E402
 from packages.validators.core import run_validation_pipeline  # noqa: E402
 
 _SEMANTIC_PASS_RESPONSE = '{"status":"pass","message":"Semantic validation passed."}'
@@ -37,7 +36,6 @@ def test_initial_regression_pack_has_non_negative_repair_uplift() -> None:
     public_case_map = {case["id"]: case for case in public_cases}
     scripted_responses = _build_scripted_responses(public_case_map, pack_cases)
     model_adapter = ScriptedModelAdapter(scripted_responses)
-    service = GenerationService(model_adapter=model_adapter)
 
     baseline_successes = 0
     final_successes = 0
@@ -71,14 +69,7 @@ def test_initial_regression_pack_has_non_negative_repair_uplift() -> None:
             baseline_successes += 1
 
         model_adapter.start_case(pack_case["case_id"])
-        result = service.generate(
-            task_text=public_case["prompt"],
-            provided_context=context,
-            archetype=public_case["archetype"],
-            output_mode=public_case["primary_output_mode"],
-            input_roots=public_case["input_roots"],
-            risk_tags=public_case["risk_tags"],
-        )
+        result = run_quality_loop(model_adapter, prompt_package).to_dict()
         if result["validation_status"] in {"passed", "repaired"}:
             final_successes += 1
 

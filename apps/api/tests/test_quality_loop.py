@@ -3,8 +3,10 @@ import re
 
 from packages.orchestrator.agent_prompt import AgentPrompt
 from packages.orchestrator import repair_loop
+from packages.orchestrator.domain_adapter import build_domain_prompt_package
 from packages.orchestrator.planner import apply_planner_agent_response, plan_task
-from packages.orchestrator.repair_loop import _detect_repair_oscillation
+from packages.orchestrator.repair_loop import _detect_repair_oscillation, run_quality_loop
+from packages.shared.language import DEFAULT_LANGUAGE
 from packages.shared.quality import ValidatorReport
 from services.generation import GenerationService
 
@@ -37,6 +39,37 @@ class ScriptedModelAdapter:
         if not self._responses:
             raise AssertionError("No scripted responses left for the model adapter.")
         return self._responses.pop(0)
+
+
+class LegacyQualityLoopService:
+    def __init__(self, model_adapter: ScriptedModelAdapter) -> None:
+        self._model_adapter = model_adapter
+
+    def generate(
+        self,
+        task_text: str,
+        provided_context: str | None = None,
+        *,
+        archetype: str | None = None,
+        output_mode: str | None = None,
+        input_roots: list[str] | None = None,
+        risk_tags: list[str] | None = None,
+        debug: bool = False,
+        language: str = DEFAULT_LANGUAGE,
+        **_: object,
+    ) -> dict[str, object]:
+        agent_runner = getattr(self._model_adapter, "generate_from_agent", None)
+        prompt_package = build_domain_prompt_package(
+            task_text,
+            provided_context,
+            archetype=archetype,
+            output_mode=output_mode,
+            input_roots=input_roots,
+            risk_tags=risk_tags,
+            language=language,
+            agent_runner=agent_runner if callable(agent_runner) else None,
+        )
+        return run_quality_loop(self._model_adapter, prompt_package, debug=debug).to_dict()
 
 
 class AgenticPromptModelAdapter(ScriptedModelAdapter):
@@ -355,8 +388,79 @@ def test_planner_agent_accepts_compact_response_keys() -> None:
     assert result.task_spec.edge_cases == ("empty_array",)
 
 
+def test_generation_service_uses_simplified_agentic_contour_without_validation_loop() -> None:
+    model_adapter = AgenticPromptModelAdapter(
+        [
+            "```lua\nreturn wf.vars.emails[#wf.vars.emails]\n```",
+        ]
+    )
+    service = GenerationService(model_adapter=model_adapter)
+
+    result = service.generate(
+        task_text="Get the last email from the list.",
+        provided_context=json.dumps(
+            {
+                "wf": {
+                    "vars": {
+                        "emails": [
+                            "user1@example.com",
+                            "user2@example.com",
+                        ]
+                    }
+                }
+            }
+        ),
+        archetype="simple_extraction",
+        output_mode="raw_lua",
+        input_roots=["wf.vars.emails"],
+        risk_tags=["array_indexing", "empty_array"],
+        debug=True,
+    )
+
+    assert result["code"] == "```lua\nreturn wf.vars.emails[#wf.vars.emails]\n```"
+    assert result["validation_status"] == "not_run"
+    assert result["stop_reason"] == "not_run"
+    assert result["trace"] == [
+        "request_received",
+        "planner",
+        "prompter",
+        "generation",
+        "response_ready",
+    ]
+    assert result["validator_report"] is None
+    assert result["critic_report"] is None
+    assert result["repair_count"] == 0
+    assert result["clarification_count"] == 0
+    assert result["output_mode"] == "raw_lua"
+    assert result["archetype"] == "simple_extraction"
+    assert [call["agent"] for call in model_adapter.agent_calls] == [
+        "planner",
+        "prompter",
+        "generator",
+    ]
+
+    debug = result["debug"]
+    assert debug is not None
+    assert [layer["stage"] for layer in debug["pipeline_layers"]] == [
+        "input_normalization",
+        "planner",
+        "prompter",
+        "generator",
+    ]
+    assert debug["model_calls"] == [
+        {
+            "phase": "generation",
+            "agent": "generator",
+            "prompt": debug["prompt_package"]["prompt"],
+            "messages": model_adapter.agent_calls[-1]["messages"],
+            "raw_response": result["code"],
+        }
+    ]
+    assert debug["validation_passes"] == []
+
+
 def test_generation_service_auto_normalizes_fenced_raw_lua_before_repair_budget() -> None:
-    service = GenerationService(
+    service = LegacyQualityLoopService(
         model_adapter=ScriptedModelAdapter(
             [
                 "```lua\nreturn wf.vars.emails[#wf.vars.emails]\n```",
@@ -412,7 +516,7 @@ def test_generation_service_runs_runtime_validation_before_semantic_for_simple_e
             SEMANTIC_PASS_RESPONSE,
         ]
     )
-    service = GenerationService(
+    service = LegacyQualityLoopService(
         model_adapter=model_adapter
     )
 
@@ -476,7 +580,7 @@ def test_generation_service_runs_planner_first_without_cli_semantic_overrides() 
             SEMANTIC_PASS_RESPONSE,
         ]
     )
-    service = GenerationService(model_adapter=model_adapter)
+    service = LegacyQualityLoopService(model_adapter=model_adapter)
 
     result = service.generate(
         task_text="Из полученного списка email получи последний.",
@@ -529,7 +633,7 @@ def test_generation_service_runtime_blocks_wrong_candidate_after_truncated_plann
             SEMANTIC_PASS_RESPONSE,
         ]
     )
-    service = GenerationService(model_adapter=model_adapter)
+    service = LegacyQualityLoopService(model_adapter=model_adapter)
 
     result = service.generate(
         task_text="Из полученного списка email получи последний.",
@@ -573,7 +677,7 @@ def test_generation_service_repair_loop_blocks_whole_array_when_planner_falls_ba
             SEMANTIC_PASS_RESPONSE,
         ]
     )
-    service = GenerationService(model_adapter=model_adapter)
+    service = LegacyQualityLoopService(model_adapter=model_adapter)
 
     result = service.generate(
         task_text="Из полученного списка email получи последний.",
@@ -613,7 +717,7 @@ def test_generation_service_runtime_validates_array_item_operation_with_transfor
             "return wf.vars.emails[#wf.vars.emails]",
         ]
     )
-    service = GenerationService(model_adapter=model_adapter)
+    service = LegacyQualityLoopService(model_adapter=model_adapter)
 
     result = service.generate(
         task_text="Из полученного списка email получи последний.",
@@ -651,7 +755,7 @@ def test_generation_service_applies_compact_planner_and_prompter_protocol() -> N
             SEMANTIC_PASS_RESPONSE,
         ]
     )
-    service = GenerationService(model_adapter=model_adapter)
+    service = LegacyQualityLoopService(model_adapter=model_adapter)
 
     result = service.generate(
         task_text="Из полученного списка email получи последний.",
@@ -684,7 +788,7 @@ def test_generation_service_runtime_backstop_blocks_unresolved_last_array_item_s
             SEMANTIC_PASS_RESPONSE,
         ]
     )
-    service = GenerationService(model_adapter=model_adapter)
+    service = LegacyQualityLoopService(model_adapter=model_adapter)
 
     result = service.generate(
         task_text="Из полученного списка email получи последний.",
@@ -730,7 +834,7 @@ def test_generation_service_applies_valid_planner_and_prompter_agent_outputs() -
             SEMANTIC_PASS_RESPONSE,
         ]
     )
-    service = GenerationService(model_adapter=model_adapter)
+    service = LegacyQualityLoopService(model_adapter=model_adapter)
 
     result = service.generate(
         task_text="Get the last email from the list.",
@@ -773,7 +877,7 @@ def test_generation_service_runs_runtime_and_semantic_when_static_validator_has_
         return normalized, format_report, syntax_report, static_report, principle_report, rule_report
 
     monkeypatch.setattr(repair_loop, "run_validation_pipeline", static_infra_skip_pipeline)
-    service = GenerationService(
+    service = LegacyQualityLoopService(
         model_adapter=ScriptedModelAdapter(
             [
                 "return wf.vars.emails[#wf.vars.emails]",
@@ -822,7 +926,7 @@ def test_generation_service_runs_runtime_and_semantic_when_static_validator_has_
 
 
 def test_generation_service_repairs_runtime_behavior_mismatch_before_semantic() -> None:
-    service = GenerationService(
+    service = LegacyQualityLoopService(
         model_adapter=ScriptedModelAdapter(
             [
                 "return wf.vars.emails[1]",
@@ -887,7 +991,7 @@ def test_generation_service_repairs_runtime_behavior_mismatch_before_semantic() 
 
 
 def test_generation_service_repairs_markdown_fenced_raw_lua_candidate() -> None:
-    service = GenerationService(
+    service = LegacyQualityLoopService(
         model_adapter=ScriptedModelAdapter(
             [
                 "```lua\nreturn wf.vars.emails[#wf.vars.emails]\n```",
@@ -940,7 +1044,7 @@ def test_generation_service_repairs_markdown_fenced_raw_lua_candidate() -> None:
 
 
 def test_generation_service_normalizes_fenced_json_wrapper_on_repair_iteration() -> None:
-    service = GenerationService(
+    service = LegacyQualityLoopService(
         model_adapter=ScriptedModelAdapter(
             [
                 '```json\n{"lastEmail":"lua{return wf.vars.emails[#wf.vars.emails]}lua"}\n```',
@@ -990,7 +1094,7 @@ def test_generation_service_normalizes_fenced_json_wrapper_on_repair_iteration()
 
 
 def test_generation_service_normalizes_fenced_patch_mode_on_repair_iteration() -> None:
-    service = GenerationService(
+    service = LegacyQualityLoopService(
         model_adapter=ScriptedModelAdapter(
             [
                 '```json\n{"num":"lua{return tonumber(\'5\')}lua","squared":"lua{local n = tonumber(\'5\')\\nreturn n * n}lua"}\n```',
@@ -1031,7 +1135,7 @@ def test_generation_service_normalizes_fenced_patch_mode_on_repair_iteration() -
 
 
 def test_generation_service_repairs_invalid_json_json_wrapper_with_tool() -> None:
-    service = GenerationService(
+    service = LegacyQualityLoopService(
         model_adapter=ScriptedModelAdapter(
             [
                 '{\n  "result": {\n    "last_email": lua{wf.vars.emails[#wf.vars.emails] or ""}lua\n  }\n}',
@@ -1090,7 +1194,7 @@ def test_generation_service_repairs_invalid_json_json_wrapper_with_tool() -> Non
 
 
 def test_generation_service_repairs_invalid_json_patch_mode_with_tool() -> None:
-    service = GenerationService(
+    service = LegacyQualityLoopService(
         model_adapter=ScriptedModelAdapter(
             [
                 "{\n  lua = {\n    value = (wf.vars.number or 0) * (wf.vars.number or 0)\n  }\n}",
@@ -1137,7 +1241,7 @@ def test_generation_service_repairs_invalid_json_patch_mode_with_tool() -> None:
 
 
 def test_generation_service_repairs_string_only_patch_object_with_tool() -> None:
-    service = GenerationService(
+    service = LegacyQualityLoopService(
         model_adapter=ScriptedModelAdapter(
             [
                 '{\n  "lua": {\n    "my_square_variable = tonumber(wf.vars.number) ^ 2;"\n  }\n}',
@@ -1178,7 +1282,7 @@ def test_generation_service_repairs_string_only_patch_object_with_tool() -> None
 
 
 def test_generation_service_repairs_fragment_only_patch_object_with_tool() -> None:
-    service = GenerationService(
+    service = LegacyQualityLoopService(
         model_adapter=ScriptedModelAdapter(
             [
                 '{\n  "wf.vars.squareOfNumber": {\n    "lua{"\n    "..=local num = wf.vars.number\\n"\n    "..=local squared = num * num\\n"\n    "..=return {squareOfNumber = squared}\\n"\n    "}"\n  }\n}',
@@ -1222,7 +1326,7 @@ def test_generation_service_repairs_fragment_only_patch_object_with_tool() -> No
 
 
 def test_generation_service_exposes_debug_audit_trail_for_repair_flow() -> None:
-    service = GenerationService(
+    service = LegacyQualityLoopService(
         model_adapter=ScriptedModelAdapter(
             [
                 "```lua\nreturn wf.vars.emails[#wf.vars.emails]\n```",
@@ -1271,7 +1375,7 @@ def test_generation_service_repairs_semantically_wrong_but_formally_valid_candid
             '{"status":"pass","message":"The candidate now returns the last email."}',
         ]
     )
-    service = GenerationService(
+    service = LegacyQualityLoopService(
         model_adapter=model_adapter
     )
 
@@ -1362,7 +1466,7 @@ def test_generation_service_repairs_whole_array_alias_for_last_array_item_before
             SEMANTIC_PASS_RESPONSE,
         ]
     )
-    service = GenerationService(model_adapter=model_adapter)
+    service = LegacyQualityLoopService(model_adapter=model_adapter)
 
     result = service.generate(
         task_text="Из полученного списка email получи последний.",
@@ -1412,7 +1516,7 @@ def test_generation_service_repairs_whole_array_alias_for_last_array_item_before
 
 
 def test_generation_service_preserves_think_block_and_validates_visible_raw_lua_response() -> None:
-    service = GenerationService(
+    service = LegacyQualityLoopService(
         model_adapter=ScriptedModelAdapter(
             [
                 "<think>\nNeed to pick the last email.\n</think>\nreturn wf.vars.emails[#wf.vars.emails]\n<|endoftext|><|im_start|>user",
@@ -1459,7 +1563,7 @@ def test_generation_service_preserves_think_block_and_validates_visible_raw_lua_
 
 
 def test_generation_service_preserves_think_block_and_validates_visible_json_response() -> None:
-    service = GenerationService(
+    service = LegacyQualityLoopService(
         model_adapter=ScriptedModelAdapter(
             [
                 "<think>\nNeed to return the last email in a wrapped JSON field.\n</think>\n"
@@ -1506,7 +1610,7 @@ def test_generation_service_preserves_think_block_and_validates_visible_json_res
 
 
 def test_generation_service_normalizes_fenced_raw_lua_on_repair_iteration() -> None:
-    service = GenerationService(
+    service = LegacyQualityLoopService(
         model_adapter=ScriptedModelAdapter(
             [
                 "return wf.data.emails[#wf.data.emails]",
@@ -1570,7 +1674,7 @@ def test_generation_service_normalizes_fenced_raw_lua_on_repair_iteration() -> N
 
 
 def test_generation_service_repairs_missing_array_allocator_with_tool() -> None:
-    service = GenerationService(
+    service = LegacyQualityLoopService(
         model_adapter=ScriptedModelAdapter(
             [
                 "\n".join(
@@ -1656,7 +1760,7 @@ def test_generation_service_repairs_missing_array_allocator_with_tool() -> None:
 
 
 def test_generation_service_returns_clarification_for_ambiguous_roots() -> None:
-    service = GenerationService(
+    service = LegacyQualityLoopService(
         model_adapter=ScriptedModelAdapter(
             [
                 "Which data root should I use: wf.vars.emails or wf.initVariables.recallTime?"
@@ -1694,7 +1798,7 @@ def test_generation_service_returns_clarification_for_ambiguous_roots() -> None:
 
 
 def test_generation_service_asks_for_feedback_after_repeated_invalid_shape_after_repair() -> None:
-    service = GenerationService(
+    service = LegacyQualityLoopService(
         model_adapter=ScriptedModelAdapter(
             [
                 "Here is the repaired code:\n```lua\nreturn wf.vars.emails[#wf.vars.emails]\n```",
@@ -1737,7 +1841,7 @@ def test_generation_service_asks_for_feedback_after_repeated_invalid_shape_after
 
 
 def test_generation_service_asks_for_feedback_after_four_non_oscillating_repairs() -> None:
-    service = GenerationService(
+    service = LegacyQualityLoopService(
         model_adapter=ScriptedModelAdapter(
             [
                 "return wf.vars.emails[1]",
@@ -1782,7 +1886,7 @@ def test_generation_service_asks_for_feedback_after_four_non_oscillating_repairs
 
 
 def test_generation_service_prefers_semantic_intent_for_clear_field_conflict() -> None:
-    service = GenerationService(
+    service = LegacyQualityLoopService(
         model_adapter=ScriptedModelAdapter(
             [
                 '\n'.join(
@@ -1868,7 +1972,7 @@ def test_generation_service_prefers_semantic_intent_for_clear_field_conflict() -
 
 
 def test_generation_service_returns_validator_conflict_for_unresolved_pattern_vs_semantic_disagreement() -> None:
-    service = GenerationService(
+    service = LegacyQualityLoopService(
         model_adapter=ScriptedModelAdapter(
             [
                 '\n'.join(
@@ -1925,7 +2029,7 @@ def test_generation_service_returns_validator_conflict_for_unresolved_pattern_vs
 
 
 def test_generation_service_accepts_direct_named_field_clearing_when_semantics_pass() -> None:
-    service = GenerationService(
+    service = LegacyQualityLoopService(
         model_adapter=ScriptedModelAdapter(
             [
                 '\n'.join(
@@ -1987,7 +2091,7 @@ def test_generation_service_accepts_direct_named_field_clearing_when_semantics_p
 
 
 def test_generation_service_asks_for_feedback_when_candidate_returns_to_previous_shape() -> None:
-    service = GenerationService(
+    service = LegacyQualityLoopService(
         model_adapter=ScriptedModelAdapter(
             [
                 "return wf.data.emails[1]",
@@ -2030,7 +2134,7 @@ def test_generation_service_asks_for_feedback_when_candidate_returns_to_previous
 
 
 def test_generation_service_asks_for_feedback_when_runtime_behavior_repeats() -> None:
-    service = GenerationService(
+    service = LegacyQualityLoopService(
         model_adapter=ScriptedModelAdapter(
             [
                 "return wf.vars.emails[1]",
@@ -2077,7 +2181,7 @@ def test_generation_service_asks_for_feedback_when_runtime_behavior_repeats() ->
 
 
 def test_generation_service_asks_for_feedback_after_three_repair_attempts_with_repeated_shape() -> None:
-    service = GenerationService(
+    service = LegacyQualityLoopService(
         model_adapter=ScriptedModelAdapter(
             [
                 "return wf.vars.emails[1]",
@@ -2158,7 +2262,7 @@ def test_detect_repair_oscillation_marks_repeated_disallowed_root_signature() ->
 
 
 def test_generation_service_accepts_domain_datetime_helper_for_unix_conversion() -> None:
-    service = GenerationService(
+    service = LegacyQualityLoopService(
         model_adapter=ScriptedModelAdapter(
             [
                 "return parse_iso8601_to_epoch(wf.initVariables.remindAt)",
@@ -2188,7 +2292,7 @@ def test_generation_service_accepts_domain_datetime_helper_for_unix_conversion()
 
 
 def test_generation_service_accepts_count_until_first_success_inclusive_false_positive() -> None:
-    service = GenerationService(
+    service = LegacyQualityLoopService(
         model_adapter=ScriptedModelAdapter(
             [
                 "\n".join(
@@ -2226,7 +2330,7 @@ def test_generation_service_accepts_count_until_first_success_inclusive_false_po
 
 
 def test_generation_service_accepts_always_array_normalization_false_positive() -> None:
-    service = GenerationService(
+    service = LegacyQualityLoopService(
         model_adapter=ScriptedModelAdapter(
             [
                 "\n".join(
@@ -2269,7 +2373,7 @@ def test_generation_service_accepts_always_array_normalization_false_positive() 
 
 
 def test_generation_service_accepts_error_code_array_projection_false_positive() -> None:
-    service = GenerationService(
+    service = LegacyQualityLoopService(
         model_adapter=ScriptedModelAdapter(
             [
                 "\n".join(
@@ -2306,7 +2410,7 @@ def test_generation_service_accepts_error_code_array_projection_false_positive()
 
 
 def test_generation_service_keeps_error_object_array_projection_failure() -> None:
-    service = GenerationService(
+    service = LegacyQualityLoopService(
         model_adapter=ScriptedModelAdapter(
             [
                 "\n".join(
@@ -2343,7 +2447,7 @@ def test_generation_service_keeps_error_object_array_projection_failure() -> Non
 
 
 def test_generation_service_accepts_file_meta_direct_projection_false_positive() -> None:
-    service = GenerationService(
+    service = LegacyQualityLoopService(
         model_adapter=ScriptedModelAdapter(
             [
                 "\n".join(
@@ -2378,7 +2482,7 @@ def test_generation_service_accepts_file_meta_direct_projection_false_positive()
 
 
 def test_generation_service_accepts_manager_name_fallback_false_positive() -> None:
-    service = GenerationService(
+    service = LegacyQualityLoopService(
         model_adapter=ScriptedModelAdapter(
             [
                 'return wf.vars.team.manager and wf.vars.team.manager.name or "no-manager"',
@@ -2405,7 +2509,7 @@ def test_generation_service_accepts_manager_name_fallback_false_positive() -> No
 
 
 def test_generation_service_accepts_date_ru_iso_reorder_false_positive() -> None:
-    service = GenerationService(
+    service = LegacyQualityLoopService(
         model_adapter=ScriptedModelAdapter(
             [
                 "\n".join(
@@ -2440,7 +2544,7 @@ def test_generation_service_accepts_date_ru_iso_reorder_false_positive() -> None
 
 
 def test_generation_service_accepts_nil_tags_empty_array_false_positive() -> None:
-    service = GenerationService(
+    service = LegacyQualityLoopService(
         model_adapter=ScriptedModelAdapter(
             [
                 "\n".join(
@@ -2477,7 +2581,7 @@ def test_generation_service_accepts_nil_tags_empty_array_false_positive() -> Non
 
 
 def test_generation_service_accepts_strict_type_count_false_positive() -> None:
-    service = GenerationService(
+    service = LegacyQualityLoopService(
         model_adapter=ScriptedModelAdapter(
             [
                 "\n".join(
@@ -2514,7 +2618,7 @@ def test_generation_service_accepts_strict_type_count_false_positive() -> None:
 
 
 def test_generation_service_accepts_iso_date_string_compare_false_positive() -> None:
-    service = GenerationService(
+    service = LegacyQualityLoopService(
         model_adapter=ScriptedModelAdapter(
             [
                 "\n".join(
@@ -2559,7 +2663,7 @@ def test_generation_service_accepts_iso_date_string_compare_false_positive() -> 
 
 
 def test_generation_service_accepts_dd_mm_yyyy_iso_conversion_false_positive() -> None:
-    service = GenerationService(
+    service = LegacyQualityLoopService(
         model_adapter=ScriptedModelAdapter(
             [
                 "\n".join(
@@ -2592,7 +2696,7 @@ def test_generation_service_accepts_dd_mm_yyyy_iso_conversion_false_positive() -
 
 
 def test_generation_service_accepts_nested_tax_code_array_projection_false_positive() -> None:
-    service = GenerationService(
+    service = LegacyQualityLoopService(
         model_adapter=ScriptedModelAdapter(
             [
                 "\n".join(
@@ -2629,7 +2733,7 @@ def test_generation_service_accepts_nested_tax_code_array_projection_false_posit
 
 
 def test_generation_service_accepts_in_place_array_field_enrichment_false_positive() -> None:
-    service = GenerationService(
+    service = LegacyQualityLoopService(
         model_adapter=ScriptedModelAdapter(
             [
                 "\n".join(
@@ -2668,7 +2772,7 @@ def test_generation_service_accepts_in_place_array_field_enrichment_false_positi
 
 
 def test_generation_service_accepts_alias_conditional_in_place_array_field_enrichment_false_positive() -> None:
-    service = GenerationService(
+    service = LegacyQualityLoopService(
         model_adapter=ScriptedModelAdapter(
             [
                 "\n".join(
@@ -2712,7 +2816,7 @@ def test_generation_service_accepts_alias_conditional_in_place_array_field_enric
 
 
 def test_generation_service_keeps_object_rebuild_field_loss_failure() -> None:
-    service = GenerationService(
+    service = LegacyQualityLoopService(
         model_adapter=ScriptedModelAdapter(
             [
                 "\n".join(
@@ -2751,7 +2855,7 @@ def test_generation_service_keeps_object_rebuild_field_loss_failure() -> None:
 
 
 def test_generation_service_repairs_patch_mode_path_keys_with_tool() -> None:
-    service = GenerationService(
+    service = LegacyQualityLoopService(
         model_adapter=ScriptedModelAdapter(
             [
                 '{"wf.vars.squared":"lua{return wf.vars.number ^ 2}lua"}',
@@ -2777,7 +2881,7 @@ def test_generation_service_repairs_patch_mode_path_keys_with_tool() -> None:
 
 
 def test_generation_service_repairs_nested_full_rewrite_patch_payload_with_tool() -> None:
-    service = GenerationService(
+    service = LegacyQualityLoopService(
         model_adapter=ScriptedModelAdapter(
             [
                 '{"wf":{"vars":{"squared":"lua{return wf.vars.number ^ 2}lua"}}}',
@@ -2803,7 +2907,7 @@ def test_generation_service_repairs_nested_full_rewrite_patch_payload_with_tool(
 
 
 def test_generation_service_exposes_layered_reports_before_critic() -> None:
-    service = GenerationService(
+    service = LegacyQualityLoopService(
         model_adapter=ScriptedModelAdapter(
             [
                 "local iso_time = wf.initVariables.recallTime\nreturn parse_iso8601_to_epoch(iso_time)",
