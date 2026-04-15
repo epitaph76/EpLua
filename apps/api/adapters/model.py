@@ -168,6 +168,7 @@ class OllamaModelAdapter:
                 "model": self._model,
                 "prompt": prompt,
                 "stream": False,
+                "think": False,
                 "options": self._runtime_options.to_ollama_options(),
             },
             timeout=self._request_timeout,
@@ -216,6 +217,7 @@ class OllamaModelAdapter:
                 "model": self._model,
                 "messages": agent_prompt.to_messages_payload(),
                 "stream": False,
+                "think": False,
                 "options": self._runtime_options.to_ollama_options(),
             },
             timeout=self._request_timeout,
@@ -323,7 +325,7 @@ class OllamaModelAdapter:
     def _generate_via_cli(self, prompt: str) -> str:
         try:
             result = subprocess.run(
-                ["ollama", "run", self._model, prompt],
+                ["ollama", "run", "--think=false", self._model, prompt],
                 capture_output=True,
                 text=True,
                 check=True,

@@ -70,6 +70,7 @@ def plan_task(
         edge_cases=tuple(),
         clarification_required=False,
         clarification_question=None,
+        clarification_questions=tuple(),
     )
     return PlannerResult(
         task_spec=task_spec,
@@ -155,6 +156,7 @@ def build_planner_agent_prompt(
     task_text: str,
     provided_context: str | None,
     fallback_result: PlannerResult,
+    clarifications: tuple[dict[str, object], ...] = (),
 ) -> AgentPrompt:
     system_prompt = "\n".join(
         [
@@ -167,16 +169,22 @@ def build_planner_agent_prompt(
             "Use the deterministic fallback only as structural evidence about language, context roots, and safe defaults.",
             "If explicit_archetype is true, preserve the given archetype. Otherwise choose the best archetype for the task.",
             "If explicit_output_mode is true, preserve the given output mode. Otherwise choose the best output mode for the task.",
+            "When clarification is needed, return up to 2 concrete questions with mutually exclusive options and a safe default option id.",
             "Required compact JSON shape:",
-            '{"arch":"simple_extraction","op":"last_array_item","mode":"raw_lua","roots":["wf.vars.emails"],"shape":"scalar_or_nil","risks":["array_indexing"],"edges":["single_item","empty_array"],"clar":false,"q":null,"intents":[]}',
+            '{"arch":"simple_extraction","op":"last_array_item","mode":"raw_lua","roots":["wf.vars.emails"],"shape":"scalar_or_nil","risks":["array_indexing"],"edges":["single_item","empty_array"],"clar":false,"q":null,"questions":[],"intents":[]}',
         ]
     )
-    user_prompt = "\n".join(
+    user_sections = [
+        "Task:",
+        task_text,
+        "Context excerpt:",
+        _compact_context_excerpt(provided_context),
+    ]
+    clarification_block = _format_user_clarifications(clarifications, language=fallback_result.language)
+    if clarification_block:
+        user_sections.extend(["Structured clarifications:", clarification_block])
+    user_sections.extend(
         [
-            "Task:",
-            task_text,
-            "Context excerpt:",
-            _compact_context_excerpt(provided_context),
             "Facts:",
             json.dumps(
                 {
@@ -196,6 +204,7 @@ def build_planner_agent_prompt(
             ),
         ]
     )
+    user_prompt = "\n".join(user_sections)
     return AgentPrompt(
         agent_name="planner",
         messages=(
@@ -210,6 +219,7 @@ def build_lowcode_planner_agent_prompt(
     task_text: str,
     provided_context: str | None,
     fallback_result: PlannerResult,
+    clarifications: tuple[dict[str, object], ...] = (),
 ) -> AgentPrompt:
     system_prompt = "\n".join(
         [
@@ -222,16 +232,22 @@ def build_lowcode_planner_agent_prompt(
             "Детерминированный fallback используй только как факты о языке, корнях context и безопасных defaults.",
             "Если explicit_archetype=true, сохрани переданный archetype.",
             "Если explicit_output_mode=true, сохрани переданный output_mode.",
+            "Если нужно уточнение, верни максимум 2 конкретных вопроса с взаимоисключающими вариантами и безопасным default_option_id.",
             "Форма ответа:",
-            '{"arch":"simple_extraction","op":"last_array_item","mode":"raw_lua","roots":["wf.vars.emails"],"shape":"scalar_or_nil","risks":["array_indexing"],"edges":["single_item","empty_array"],"clar":false,"q":null,"intents":[]}',
+            '{"arch":"simple_extraction","op":"last_array_item","mode":"lowcode_json","roots":["wf.vars.emails"],"shape":"scalar_or_nil","risks":["array_indexing"],"edges":["single_item","empty_array"],"clar":false,"q":null,"questions":[],"intents":[]}',
         ]
     )
-    user_prompt = "\n".join(
+    user_sections = [
+        "Задача:",
+        task_text,
+        "Фрагмент контекста:",
+        _compact_context_excerpt(provided_context),
+    ]
+    clarification_block = _format_user_clarifications(clarifications, language=fallback_result.language)
+    if clarification_block:
+        user_sections.extend(["Уточнения пользователя:", clarification_block])
+    user_sections.extend(
         [
-            "Задача:",
-            task_text,
-            "Фрагмент контекста:",
-            _compact_context_excerpt(provided_context),
             "Факты:",
             json.dumps(
                 {
@@ -251,6 +267,7 @@ def build_lowcode_planner_agent_prompt(
             ),
         ]
     )
+    user_prompt = "\n".join(user_sections)
     return AgentPrompt(
         agent_name="planner",
         messages=(
@@ -258,6 +275,65 @@ def build_lowcode_planner_agent_prompt(
             AgentMessage(role="user", content=user_prompt),
         ),
     )
+
+
+def build_lowcode_clarifier_agent_prompt(
+    *,
+    task_text: str,
+    provided_context: str | None,
+    fallback_result: PlannerResult,
+) -> AgentPrompt:
+    system_prompt = "\n".join(
+        [
+            "Ты clarifier-агент plan preflight для luaMTS.",
+            "Не генерируй Lua-код и не составляй полный план.",
+            "Твоя задача - решить, нужны ли пользователю 1-2 уточняющих вопроса перед генерацией.",
+            "Спрашивай только о смысловых неоднозначностях задачи: что вернуть при пустом/некорректном входе, какой вариант обработки выбрать, какой формат результата нужен.",
+            "Не спрашивай про внутренние детали реализации: output_mode, input_roots, risk_tags, Lua-конструкции, имена агентов.",
+            "Не спрашивай то, что уже явно указано в задаче или контексте.",
+            "Если задача достаточно ясна, верни clar=false и пустой список questions.",
+            "Варианты ответа должны быть взаимоисключающими, с безопасным default_option_id.",
+            "Верни только один компактный JSON object без markdown и пояснений.",
+            'Форма ответа: {"clar":true,"questions":[{"id":"empty_input_behavior","question":"Что вернуть, если вход пустой?","options":[{"id":"nil","label":"nil","description":""},{"id":"empty_string","label":"пустую строку","description":""}],"default_option_id":"nil"}]}',
+        ]
+    )
+    user_prompt = "\n".join(
+        [
+            "Задача:",
+            task_text,
+            "Фрагмент контекста:",
+            _compact_context_excerpt(provided_context),
+            "Факты:",
+            json.dumps(
+                {
+                    "lang": fallback_result.language,
+                    "roots": list(fallback_result.input_roots),
+                    "explicit_roots": fallback_result.explicit_input_basis,
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+        ]
+    )
+    return AgentPrompt(
+        agent_name="clarifier",
+        messages=(
+            AgentMessage(role="system", content=system_prompt),
+            AgentMessage(role="user", content=user_prompt),
+        ),
+    )
+
+
+def parse_clarifier_agent_response(raw_response: str) -> tuple[dict[str, object], ...]:
+    payload = _extract_json_payload(raw_response)
+    if payload is None:
+        return tuple()
+
+    clarification_required = _bool_or(payload.get("clarification_required"), _bool_or(payload.get("clar"), False))
+    questions = _normalize_clarification_questions(payload, fallback_question=None)
+    if not clarification_required and not questions:
+        return tuple()
+    return questions
 
 
 def apply_planner_agent_response(
@@ -284,7 +360,7 @@ def apply_planner_agent_response(
     output_mode = fallback_result.task_spec.output_mode
     if not fallback_result.explicit_output_mode:
         output_mode = _string_or(payload.get("output_mode"), output_mode)
-        if output_mode not in {"raw_lua", "json_wrapper", "patch_mode", "clarification"}:
+        if output_mode not in {"raw_lua", "lowcode_json", "json_wrapper", "patch_mode", "clarification"}:
             output_mode = fallback_result.task_spec.output_mode
 
     archetype = fallback_result.task_spec.archetype
@@ -304,8 +380,19 @@ def apply_planner_agent_response(
     clarification_question = payload.get("clarification_question")
     if not isinstance(clarification_question, str) or not clarification_question.strip():
         clarification_question = fallback_result.task_spec.clarification_question
+    clarification_questions = _normalize_clarification_questions(
+        payload,
+        fallback_question=clarification_question,
+    )
+    if clarification_question is None and clarification_questions:
+        first_question = clarification_questions[0].get("question")
+        if isinstance(first_question, str) and first_question.strip():
+            clarification_question = first_question
     if clarification_required:
         output_mode = "clarification"
+    else:
+        clarification_question = None
+        clarification_questions = tuple()
 
     task_spec = TaskSpec(
         task_text=fallback_result.task_spec.task_text,
@@ -319,6 +406,7 @@ def apply_planner_agent_response(
         edge_cases=edge_cases,
         clarification_required=clarification_required,
         clarification_question=clarification_question if clarification_required else None,
+        clarification_questions=clarification_questions,
     )
     return PlannerResult(
         task_spec=task_spec,
@@ -407,6 +495,76 @@ def _normalize_planner_payload_aliases(payload: dict[str, Any]) -> dict[str, Any
     return normalized
 
 
+def _normalize_clarification_questions(
+    payload: dict[str, Any],
+    *,
+    fallback_question: str | None,
+) -> tuple[dict[str, object], ...]:
+    raw_questions = payload.get("questions")
+    normalized_questions: list[dict[str, object]] = []
+    if isinstance(raw_questions, list):
+        for raw_question in raw_questions[:2]:
+            question = _normalize_clarification_question(raw_question)
+            if question is not None:
+                normalized_questions.append(question)
+
+    if not normalized_questions and isinstance(fallback_question, str) and fallback_question.strip():
+        normalized_questions.append(
+            {
+                "id": "clarification_question",
+                "question": fallback_question.strip(),
+                "options": tuple(),
+                "default_option_id": None,
+            }
+        )
+    return tuple(normalized_questions)
+
+
+def _normalize_clarification_question(raw_question: object) -> dict[str, object] | None:
+    if not isinstance(raw_question, dict):
+        return None
+
+    question_id = _clean_string(raw_question.get("id")) or "clarification_question"
+    question_text = _clean_string(raw_question.get("question")) or _clean_string(raw_question.get("q"))
+    if question_text is None:
+        return None
+
+    normalized_options: list[dict[str, str]] = []
+    raw_options = raw_question.get("options")
+    if isinstance(raw_options, list):
+        for raw_option in raw_options:
+            option = _normalize_clarification_option(raw_option)
+            if option is not None:
+                normalized_options.append(option)
+
+    default_option_id = _clean_string(raw_question.get("default_option_id")) or _clean_string(raw_question.get("default"))
+    option_ids = {option["id"] for option in normalized_options}
+    if default_option_id not in option_ids:
+        default_option_id = normalized_options[0]["id"] if normalized_options else None
+
+    return {
+        "id": question_id,
+        "question": question_text,
+        "options": tuple(normalized_options),
+        "default_option_id": default_option_id,
+    }
+
+
+def _normalize_clarification_option(raw_option: object) -> dict[str, str] | None:
+    if not isinstance(raw_option, dict):
+        return None
+    option_id = _clean_string(raw_option.get("id"))
+    label = _clean_string(raw_option.get("label"))
+    if option_id is None or label is None:
+        return None
+    description = _clean_string(raw_option.get("description")) or ""
+    return {
+        "id": option_id,
+        "label": label,
+        "description": description,
+    }
+
+
 def _extract_partial_string_field(raw_response: str, key: str) -> str | None:
     match = re.search(rf'"{re.escape(key)}"\s*:\s*"(?P<value>(?:[^"\\]|\\.)*)"', raw_response)
     if not match:
@@ -445,6 +603,10 @@ def _string_or(value: object, fallback: str) -> str:
     return value.strip() if isinstance(value, str) and value.strip() else fallback
 
 
+def _clean_string(value: object) -> str | None:
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
 def _string_tuple(value: object) -> tuple[str, ...]:
     if not isinstance(value, list):
         return tuple()
@@ -457,3 +619,26 @@ def _bool_or(value: object, fallback: bool) -> bool:
 
 def _is_allowed_root(root: str) -> bool:
     return root.startswith("wf.vars.") or root.startswith("wf.initVariables.")
+
+
+def _format_user_clarifications(
+    clarifications: tuple[dict[str, object], ...],
+    *,
+    language: str,
+) -> str:
+    if not clarifications:
+        return ""
+
+    lines: list[str] = []
+    for clarification in clarifications:
+        question_id = _clean_string(clarification.get("question_id")) if isinstance(clarification, dict) else None
+        option_id = _clean_string(clarification.get("option_id")) if isinstance(clarification, dict) else None
+        free_text = _clean_string(clarification.get("free_text")) if isinstance(clarification, dict) else None
+        if question_id is None:
+            continue
+        answer = option_id or free_text or ("custom" if language == "en" else "custom")
+        if free_text:
+            lines.append(f"- {question_id}: {answer} ({free_text})")
+        else:
+            lines.append(f"- {question_id}: {answer}")
+    return "\n".join(lines)

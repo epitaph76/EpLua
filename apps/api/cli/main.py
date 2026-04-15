@@ -21,11 +21,20 @@ from packages.shared.language import DEFAULT_LANGUAGE, VALID_LANGUAGES
 from runtime_policy import (
     DEFAULT_MODEL_TAG,
     DEFAULT_PARALLEL,
+    DEBUG_MODE,
     RELEASE_MODE,
+    RELEASE_SLIM_MODE,
     RuntimeOptions,
+    default_runtime_options_for_mode,
     effective_parallel,
     enforce_model_policy,
+    is_debug_mode,
     is_cloud_model_tag,
+    mode_allows_runtime_overrides,
+    mode_label,
+    mode_shows_compact_status,
+    mode_supports_cloud_override,
+    mode_uses_release_spinner,
     normalize_mode,
 )
 
@@ -47,6 +56,7 @@ DEFAULT_REPAIR_BUDGET = 2
 DEFAULT_HISTORY_PATH = Path(os.getenv("LUAMTS_HISTORY_FILE", "~/.luamts_history")).expanduser()
 CHAT_HISTORY_LIMIT = 1000
 MAX_MULTILINE_PASTE_LINES = 200
+CLI_MODE_CHOICES = [RELEASE_MODE, RELEASE_SLIM_MODE, "release-slim", "release_slim", "releaseslim", DEBUG_MODE]
 _CHAT_HISTORY_CONFIGURED = False
 _CHAT_READLINE: Any | None = None
 
@@ -121,7 +131,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _add_runtime_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--mode", choices=["release", "debug"], default=RELEASE_MODE)
+    parser.add_argument("--mode", choices=CLI_MODE_CHOICES, default=RELEASE_MODE)
     parser.add_argument("--api-base-url", default=DEFAULT_API_BASE_URL)
     parser.add_argument("--ollama-base-url", default=DEFAULT_OLLAMA_BASE_URL)
     parser.add_argument("--model")
@@ -184,6 +194,10 @@ def _configure_chat_history(history_path: Path = DEFAULT_HISTORY_PATH) -> None:
         readline.set_history_length(CHAT_HISTORY_LIMIT)
     except AttributeError:
         pass
+    try:
+        readline.set_auto_history(False)
+    except AttributeError:
+        pass
 
     try:
         if history_path.exists():
@@ -214,6 +228,24 @@ def _read_chat_input(prompt: str) -> str:
     merged_line = "\n".join(lines)
     _add_chat_history(merged_line)
     return merged_line
+
+
+def _read_chat_paste(prompt: str, console: Console) -> str | None:
+    console.print("Paste mode: enter multiple lines, then /send or /cancel")
+    lines: list[str] = []
+    while len(lines) < MAX_MULTILINE_PASTE_LINES:
+        line = input(prompt)
+        if line == "/send":
+            merged_line = "\n".join(lines)
+            _add_chat_history(merged_line)
+            return merged_line
+        if line == "/cancel":
+            console.print("Paste cancelled")
+            return None
+        lines.append(line)
+
+    console.print(f"Paste cancelled: limit is {MAX_MULTILINE_PASTE_LINES} lines")
+    return None
 
 
 def _is_slash_command_line(line: str) -> bool:
@@ -285,6 +317,15 @@ def _handle_chat(args: argparse.Namespace) -> int:
             return 0
         if not line:
             continue
+        if line == "/paste":
+            try:
+                pasted = _read_chat_paste("...... ", console)
+            except EOFError:
+                console.print("bye")
+                return 0
+            if not pasted:
+                continue
+            line = pasted.strip()
         if line.startswith("/"):
             if _apply_chat_command(state, line, console):
                 return 0
@@ -299,13 +340,36 @@ def _handle_chat(args: argparse.Namespace) -> int:
             "input_roots": input_roots,
             "risk_tags": None,
         }
+        clarifications: list[dict[str, object]] | None = None
+        if state.get("plan_mode"):
+            state["plan_mode"] = False
+            if not state["with_api"]:
+                console.print("Plan mode requires /with-api.")
+                continue
+            plan_args = argparse.Namespace(
+                **request_state,
+                task=task_text,
+                report=None,
+                debug_trace=is_debug_mode(state["mode"]),
+                archetype=None,
+                output_mode=None,
+            )
+            try:
+                plan_payload = _plan_with_api(plan_args, provided_context)
+                clarifications = _run_plan_one_shot(plan_payload, console)
+            except (CliError, ApiError, httpx.HTTPError) as exc:
+                console.print(f"error: {exc}")
+                continue
+            if clarifications is None:
+                continue
         task_args = argparse.Namespace(
             **request_state,
             task=task_text,
             report=None,
-            debug_trace=state["mode"] == "debug",
+            debug_trace=is_debug_mode(state["mode"]),
             archetype=None,
             output_mode=None,
+            clarifications=clarifications,
         )
         try:
             _validate_generate_args(task_args)
@@ -327,8 +391,20 @@ def _handle_chat(args: argparse.Namespace) -> int:
             response_payload=response_payload,
             console=console,
         )
+        _remember_last_interaction(state, task_args, provided_context, response_payload)
+        if _has_assisted_repair_request(response_payload):
+            if _run_assisted_repair_attempt(
+                state=state,
+                task_args=task_args,
+                provided_context=provided_context,
+                response_payload=response_payload,
+                console=console,
+            ):
+                return 0
+            continue
         if _needs_user_feedback(status):
             if _run_feedback_attempt(
+                state=state,
                 task_args=task_args,
                 provided_context=provided_context,
                 response_payload=response_payload,
@@ -339,7 +415,7 @@ def _handle_chat(args: argparse.Namespace) -> int:
 
 def _chat_state_from_args(args: argparse.Namespace) -> dict[str, Any]:
     return {
-        "mode": getattr(args, "mode", RELEASE_MODE),
+        "mode": normalize_mode(getattr(args, "mode", RELEASE_MODE)),
         "api_base_url": getattr(args, "api_base_url", DEFAULT_API_BASE_URL),
         "ollama_base_url": getattr(args, "ollama_base_url", DEFAULT_OLLAMA_BASE_URL),
         "model": getattr(args, "model", None),
@@ -352,6 +428,8 @@ def _chat_state_from_args(args: argparse.Namespace) -> dict[str, Any]:
         "with_api": True,
         "context": getattr(args, "context", None),
         "input_roots": [],
+        "plan_mode": False,
+        "last_interaction": None,
         "language": getattr(args, "language", DEFAULT_LANGUAGE),
         "repair_budget": getattr(args, "repair_budget", DEFAULT_REPAIR_BUDGET),
     }
@@ -369,28 +447,20 @@ def _apply_chat_command(state: dict[str, Any], line: str, console: Console) -> b
         console.print("bye")
         return True
     if command == "/help":
-        console.print("Slash commands: /debug, /release, /lang <ru|en>, /model <tag|n>, /repair-budget <n>, /num-ctx <n>, /num-predict <n>, /batch <n>, /temperature <n>, /parallel <n>, /roots <wf.path...>, /allow-cloud on|off, /with-api, /without-api, /context <json-or-path>, /plan, /status, /exit")
-        console.print("Multiline JSON paste: paste the task plus JSON; CLI keeps reading until braces/brackets are closed.")
+        console.print("Slash commands: /debug, /release, /release-slim, /lang <ru|en>, /model <tag|n>, /repair-budget <n>, /num-ctx <n>, /num-predict <n>, /batch <n>, /temperature <n>, /parallel <n>, /roots <wf.path...>, /allow-cloud on|off, /with-api, /without-api, /context <json-or-path>, /paste, /plan, /feedback <text>, /status, /exit")
+        console.print("Multiline JSON paste: either paste task+JSON with open braces, or use /paste and finish with /send.")
         console.print(f"History: use arrow up/down when readline is available; saved to {DEFAULT_HISTORY_PATH}")
         return False
     if command == "/debug":
-        state["mode"] = "debug"
+        state["mode"] = DEBUG_MODE
         _print_chat_status(state, console)
         return False
     if command == "/release":
-        state.update(
-            {
-                "mode": RELEASE_MODE,
-                "model": None,
-                "num_ctx": None,
-                "num_predict": None,
-                "batch": None,
-                "temperature": None,
-                "parallel": None,
-                "allow_cloud_model": False,
-                "with_api": True,
-            }
-        )
+        _apply_release_like_chat_preset(state, RELEASE_MODE)
+        _print_chat_status(state, console)
+        return False
+    if command in {"/release-slim", "/releaseslim"}:
+        _apply_release_like_chat_preset(state, RELEASE_SLIM_MODE)
         _print_chat_status(state, console)
         return False
     if command == "/temperature":
@@ -462,7 +532,15 @@ def _apply_chat_command(state: dict[str, Any], line: str, console: Console) -> b
         console.print("Roots: " + (", ".join(values) if values else "auto"))
         return False
     if command == "/plan":
-        console.print("Plan: respect explicit roots -> narrow JSON context -> generate -> validate/repair -> ask for feedback when bounded.")
+        state["plan_mode"] = True
+        console.print("Plan mode: on for next request")
+        return False
+    if command == "/feedback":
+        feedback_text = " ".join(values).strip()
+        if not feedback_text:
+            console.print("usage: /feedback <text>")
+            return False
+        _run_explicit_feedback_command(state, feedback_text, console)
         return False
     if command == "/allow-cloud":
         if not values or values[0].lower() not in {"on", "off"}:
@@ -492,14 +570,38 @@ def _apply_chat_command(state: dict[str, Any], line: str, console: Console) -> b
 
 
 def _print_chat_status(state: dict[str, Any], console: Console) -> None:
-    model = state["model"] or _effective_model(None)
-    path = "with-api" if state["with_api"] else "without-api"
-    options = _runtime_options_from_args(argparse.Namespace(**state))
-    parallel = state["parallel"] or effective_parallel()
-    console.print(
-        f"Mode: {state['mode']} | Lang: {state['language']} | Model: {model} | Path: {path} | "
-        f"Allow cloud: {state['allow_cloud_model']} | Params: {_params_label(options, parallel)} | "
-        f"Repair budget: {state.get('repair_budget', DEFAULT_REPAIR_BUDGET)}"
+    normalized_mode = normalize_mode(state["mode"])
+    status_parts = [
+        f"Mode: {normalized_mode}",
+        f"Lang: {state['language']}",
+        f"Model: {state['model'] or _effective_model(None)}",
+        f"Plan: {'on' if state.get('plan_mode') else 'off'}",
+    ]
+    if not mode_shows_compact_status(normalized_mode):
+        options = _runtime_options_from_args(argparse.Namespace(**state))
+        parallel = state["parallel"] or effective_parallel()
+        status_parts.extend(
+            [
+                f"Params: {_params_label(options, parallel)}",
+            ]
+        )
+    status_parts.append(f"Repair budget: {state.get('repair_budget', DEFAULT_REPAIR_BUDGET)}")
+    console.print(" | ".join(status_parts))
+
+
+def _apply_release_like_chat_preset(state: dict[str, Any], mode: str) -> None:
+    state.update(
+        {
+            "mode": normalize_mode(mode),
+            "model": None,
+            "num_ctx": None,
+            "num_predict": None,
+            "batch": None,
+            "temperature": None,
+            "parallel": None,
+            "allow_cloud_model": False,
+            "with_api": True,
+        }
     )
 
 
@@ -507,8 +609,264 @@ def _needs_user_feedback(status: object) -> bool:
     return str(status) in {"bounded_failure", "validator_conflict", "clarification_requested"}
 
 
+def _has_assisted_repair_request(response_payload: dict[str, object]) -> bool:
+    request = response_payload.get("assisted_repair_request")
+    return isinstance(request, dict)
+
+
+def _remember_last_interaction(
+    state: dict[str, Any],
+    task_args: argparse.Namespace,
+    provided_context: str | None,
+    response_payload: dict[str, object],
+) -> None:
+    state["last_interaction"] = {
+        "task_text": str(task_args.task),
+        "provided_context": provided_context,
+        "archetype": getattr(task_args, "archetype", None),
+        "output_mode": getattr(task_args, "output_mode", None),
+        "input_roots": getattr(task_args, "input_roots", None),
+        "risk_tags": getattr(task_args, "risk_tags", None),
+        "clarifications": getattr(task_args, "clarifications", None),
+        "candidate": str(response_payload.get("code", "")),
+        "assisted_repair_request": response_payload.get("assisted_repair_request"),
+    }
+
+
+def _run_explicit_feedback_command(state: dict[str, Any], feedback_text: str, console: Console) -> None:
+    last_interaction = state.get("last_interaction")
+    if not isinstance(last_interaction, dict):
+        console.print("No previous result for /feedback.")
+        return
+    if not state.get("with_api"):
+        console.print("Feedback mode requires /with-api.")
+        return
+
+    base_state = {
+        key: value
+        for key, value in state.items()
+        if key not in {"input_roots", "context", "last_interaction"}
+    }
+    feedback_args = argparse.Namespace(
+        **base_state,
+        task=str(last_interaction.get("task_text") or ""),
+        report=None,
+        debug_trace=is_debug_mode(state["mode"]),
+        archetype=last_interaction.get("archetype"),
+        output_mode=last_interaction.get("output_mode"),
+        input_roots=last_interaction.get("input_roots"),
+        risk_tags=last_interaction.get("risk_tags"),
+        clarifications=last_interaction.get("clarifications"),
+        feedback_text=feedback_text,
+        previous_candidate=str(last_interaction.get("candidate") or ""),
+    )
+    provided_context = last_interaction.get("provided_context")
+    if provided_context is not None and not isinstance(provided_context, str):
+        provided_context = str(provided_context)
+
+    try:
+        _validate_generate_args(feedback_args)
+        response_payload = _generate_with_api(feedback_args, provided_context, console=console)
+    except (CliError, ApiError, httpx.HTTPError) as exc:
+        console.print(f"error: {exc}")
+        return
+
+    status = response_payload.get("validation_status", "not_run")
+    console.print(f"Status: {status}")
+    _print_generated_code(console, str(response_payload.get("code", "")))
+    _print_pipeline_debug(
+        args=feedback_args,
+        provided_context=provided_context,
+        response_payload=response_payload,
+        console=console,
+    )
+    _remember_last_interaction(state, feedback_args, provided_context, response_payload)
+
+
+def _run_assisted_repair_attempt(
+    *,
+    state: dict[str, Any],
+    task_args: argparse.Namespace,
+    provided_context: str | None,
+    response_payload: dict[str, object],
+    console: Console,
+) -> bool:
+    request = response_payload.get("assisted_repair_request")
+    if not isinstance(request, dict):
+        return False
+
+    summary = request.get("summary")
+    if isinstance(summary, str) and summary.strip():
+        console.print("Код не прошёл проверку.")
+        console.print(f"Проблема: {summary}")
+
+    options = request.get("options")
+    normalized_options = options if isinstance(options, list) else []
+    if normalized_options:
+        console.print("Что сделать?")
+        for index, option in enumerate(normalized_options, start=1):
+            if not isinstance(option, dict):
+                continue
+            console.print(f"{index}. {option.get('label')}")
+
+    answer = _read_chat_input("assist> ").strip()
+    if not answer:
+        console.print("Assisted repair skipped.")
+        return False
+    if answer.lower() in {"/exit", "/quit"}:
+        console.print("bye")
+        return True
+    if answer.lower() == "/cancel":
+        console.print("Assisted repair cancelled.")
+        return False
+
+    selected_option = _resolve_plan_option(answer, normalized_options, None)
+    if selected_option is None:
+        raise CliError("Invalid assisted repair option.")
+
+    option_id = str(selected_option.get("id") or "").strip()
+    if option_id == "custom":
+        feedback_text = _read_chat_input("custom> ").strip()
+        if not feedback_text:
+            console.print("Assisted repair skipped.")
+            return False
+    else:
+        feedback_text = str(selected_option.get("effect") or "").strip()
+        if not feedback_text:
+            raise CliError("Assisted repair option requires effect text.")
+
+    assisted_args = argparse.Namespace(**vars(task_args))
+    assisted_args.feedback_text = feedback_text
+    assisted_args.previous_candidate = str(response_payload.get("code", ""))
+    assisted_args.assisted_repair_option_id = option_id
+    retry_payload = (
+        _generate_with_api(assisted_args, provided_context, console=console)
+        if task_args.with_api
+        else _generate_without_api(assisted_args, provided_context)
+    )
+    status = retry_payload.get("validation_status", "not_run")
+    console.print(f"Status: {status}")
+    _print_generated_code(console, str(retry_payload.get("code", "")))
+    _print_pipeline_debug(
+        args=assisted_args,
+        provided_context=provided_context,
+        response_payload=retry_payload,
+        console=console,
+    )
+    _remember_last_interaction(state, assisted_args, provided_context, retry_payload)
+    return False
+
+
+def _run_plan_one_shot(plan_payload: dict[str, object], console: Console) -> list[dict[str, object]] | None:
+    _print_plan_summary(plan_payload, console)
+    questions = plan_payload.get("questions")
+    if not isinstance(questions, list) or not questions:
+        return []
+
+    console.print("Нужно уточнение:")
+    clarifications: list[dict[str, object]] = []
+    for question in questions:
+        clarification = _collect_plan_answer(question, console)
+        if clarification is None:
+            console.print("Plan cancelled.")
+            return None
+        clarifications.append(clarification)
+    return clarifications
+
+
+def _print_plan_summary(plan_payload: dict[str, object], console: Console) -> None:
+    task_spec = plan_payload.get("task_spec")
+    if not isinstance(task_spec, dict):
+        return
+
+    console.print("План:")
+    operation = task_spec.get("operation")
+    if operation:
+        console.print(f"- операция: {operation}")
+    input_roots = task_spec.get("input_roots")
+    if isinstance(input_roots, list) and input_roots:
+        console.print(f"- вход: {', '.join(str(root) for root in input_roots)}")
+    expected_shape = task_spec.get("expected_shape")
+    if expected_shape:
+        console.print(f"- результат: {expected_shape}")
+    edge_cases = task_spec.get("edge_cases")
+    if isinstance(edge_cases, list) and edge_cases:
+        console.print(f"- edge cases: {', '.join(str(case) for case in edge_cases)}")
+
+
+def _collect_plan_answer(question: object, console: Console) -> dict[str, object] | None:
+    if not isinstance(question, dict):
+        return None
+
+    question_id = str(question.get("id") or "").strip()
+    question_text = str(question.get("question") or "").strip()
+    if not question_id or not question_text:
+        return None
+
+    console.print("")
+    console.print(question_text)
+    options = question.get("options")
+    normalized_options = options if isinstance(options, list) else []
+    for index, option in enumerate(normalized_options, start=1):
+        if not isinstance(option, dict):
+            continue
+        console.print(f"{index}. {option.get('label')}")
+
+    answer = _read_chat_input("> ").strip()
+    if answer.lower() in {"/cancel", "/exit", "/quit"}:
+        return None
+
+    if normalized_options:
+        selected_option = _resolve_plan_option(answer, normalized_options, question.get("default_option_id"))
+        if selected_option is None:
+            raise CliError("Invalid clarification option.")
+        option_id = str(selected_option.get("id") or "").strip()
+        if option_id == "custom":
+            free_text = _read_chat_input("custom> ").strip()
+            if not free_text:
+                raise CliError("Custom clarification requires text.")
+            return {
+                "question_id": question_id,
+                "option_id": option_id,
+                "free_text": free_text,
+            }
+        return {
+            "question_id": question_id,
+            "option_id": option_id,
+            "free_text": None,
+        }
+
+    if not answer:
+        raise CliError("Clarification answer is required.")
+    return {
+        "question_id": question_id,
+        "option_id": "free_text",
+        "free_text": answer,
+    }
+
+
+def _resolve_plan_option(
+    answer: str,
+    options: list[object],
+    default_option_id: object,
+) -> dict[str, object] | None:
+    if not answer and isinstance(default_option_id, str):
+        for option in options:
+            if isinstance(option, dict) and option.get("id") == default_option_id:
+                return option
+    try:
+        selected_index = int(answer)
+    except ValueError:
+        selected_index = 0
+    if 1 <= selected_index <= len(options):
+        option = options[selected_index - 1]
+        return option if isinstance(option, dict) else None
+    return None
+
+
 def _run_feedback_attempt(
     *,
+    state: dict[str, Any],
     task_args: argparse.Namespace,
     provided_context: str | None,
     response_payload: dict[str, object],
@@ -530,12 +888,8 @@ def _run_feedback_attempt(
         return True
 
     feedback_args = argparse.Namespace(**vars(task_args))
-    feedback_args.task = _task_with_feedback(
-        original_task=str(task_args.task),
-        feedback=feedback,
-        previous_candidate=str(response_payload.get("code", "")),
-        language=str(getattr(task_args, "language", DEFAULT_LANGUAGE)),
-    )
+    feedback_args.feedback_text = feedback
+    feedback_args.previous_candidate = str(response_payload.get("code", ""))
     retry_payload = (
         _generate_with_api(feedback_args, provided_context, console=console)
         if task_args.with_api
@@ -550,20 +904,8 @@ def _run_feedback_attempt(
         response_payload=retry_payload,
         console=console,
     )
+    _remember_last_interaction(state, feedback_args, provided_context, retry_payload)
     return False
-
-
-def _task_with_feedback(*, original_task: str, feedback: str, previous_candidate: str, language: str) -> str:
-    feedback_label = "Обратная связь пользователя после неудачной попытки" if language == "ru" else "User feedback after failed attempt"
-    previous_label = "Предыдущий кандидат" if language == "ru" else "Previous candidate"
-    return "\n".join(
-        [
-            original_task,
-            "",
-            f"{feedback_label}: {feedback}",
-            f"{previous_label}: {previous_candidate}",
-        ]
-    ).strip()
 
 
 def _print_pipeline_debug(
@@ -573,7 +915,7 @@ def _print_pipeline_debug(
     response_payload: dict[str, object],
     console: Console,
 ) -> None:
-    if not (args.mode == "debug" or bool(getattr(args, "debug_trace", False))):
+    if not (is_debug_mode(args.mode) or bool(getattr(args, "debug_trace", False))):
         return
 
     if not bool(getattr(args, "_live_progress_printed", False)):
@@ -637,7 +979,7 @@ def _print_debug_progress_from_trace(response_payload: dict[str, object], consol
 
 
 def _debug_enabled(args: argparse.Namespace) -> bool:
-    return args.mode == "debug" or bool(getattr(args, "debug_trace", False))
+    return is_debug_mode(args.mode) or bool(getattr(args, "debug_trace", False))
 
 
 def _format_agent_layers(debug_payload: dict[str, object]) -> str:
@@ -668,7 +1010,7 @@ def _debug_request_payload(args: argparse.Namespace, provided_context: str | Non
         "task_text": args.task,
         "provided_context": provided_context,
         "mode": args.mode,
-        "debug": args.mode == "debug" or bool(getattr(args, "debug_trace", False)),
+        "debug": is_debug_mode(args.mode) or bool(getattr(args, "debug_trace", False)),
         "model": _effective_model(args.model),
     }
     runtime_options = _runtime_options_payload_from_args(args)
@@ -734,7 +1076,7 @@ def _handle_doctor(args: argparse.Namespace) -> int:
     for label, path in _local_asset_paths():
         checks.append((label, path.exists(), str(path.relative_to(REPO_ROOT))))
 
-    cloud_allowed = not is_cloud_model_tag(model) or (args.mode == "debug" and args.allow_cloud_model)
+    cloud_allowed = not is_cloud_model_tag(model) or (mode_supports_cloud_override(args.mode) and args.allow_cloud_model)
     checks.append(("cloud model guard", cloud_allowed, model))
     checks.append(("runtime params", True, _params_label(options, parallel)))
 
@@ -766,14 +1108,14 @@ def _handle_bench(args: argparse.Namespace) -> int:
 def _handle_vram_check(args: argparse.Namespace) -> int:
     model = _effective_model(args.model)
     enforce_model_policy(model, mode=args.mode, allow_cloud_model=args.allow_cloud_model)
-    options = RuntimeOptions.release_defaults() if args.mode == RELEASE_MODE else RuntimeOptions.from_env()
+    options = default_runtime_options_for_mode(args.mode)
     with httpx.Client() as client:
         client.post(
             f"{args.api_base_url.rstrip('/')}/generate",
             json={
                 "task_text": args.task,
                 "debug": False,
-                "mode": RELEASE_MODE,
+                "mode": normalize_mode(args.mode),
                 "model": model,
                 "runtime_options": options.to_ollama_options(),
                 "repair_budget": getattr(args, "repair_budget", DEFAULT_REPAIR_BUDGET),
@@ -805,11 +1147,12 @@ def _handle_vram_check(args: argparse.Namespace) -> int:
 
 
 def _validate_generate_args(args: argparse.Namespace) -> None:
-    normalize_mode(args.mode)
+    normalized_mode = normalize_mode(args.mode)
+    args.mode = normalized_mode
     repair_budget = getattr(args, "repair_budget", DEFAULT_REPAIR_BUDGET)
     if repair_budget <= 0:
         raise CliError("--repair-budget must be a positive integer.")
-    if args.mode == RELEASE_MODE:
+    if not mode_allows_runtime_overrides(normalized_mode):
         blocked = []
         for flag_name, value in (
             ("--model", args.model),
@@ -826,11 +1169,11 @@ def _validate_generate_args(args: argparse.Namespace) -> None:
         if not args.with_api:
             blocked.append("--without-api")
         if blocked:
-            raise CliError(f"release mode does not allow these flags: {', '.join(blocked)}")
+            raise CliError(f"{mode_label(normalized_mode)} mode does not allow these flags: {', '.join(blocked)}")
     else:
         enforce_model_policy(
             _effective_model(args.model),
-            mode=args.mode,
+            mode=normalized_mode,
             allow_cloud_model=args.allow_cloud_model,
         )
 
@@ -861,6 +1204,21 @@ def _generate_with_api(
         try:
             with _release_spinner(args):
                 response = client.post(f"{args.api_base_url.rstrip('/')}/generate", json=payload, timeout=timeout)
+        except httpx.TimeoutException as exc:
+            raise CliError(f"API request timed out after {timeout:.0f}s.") from exc
+        response.raise_for_status()
+        return dict(response.json())
+
+
+def _plan_with_api(
+    args: argparse.Namespace,
+    provided_context: str | None,
+) -> dict[str, object]:
+    payload = _api_request_payload(args, provided_context)
+    timeout = _api_timeout(args)
+    with httpx.Client() as client:
+        try:
+            response = client.post(f"{args.api_base_url.rstrip('/')}/plan", json=payload, timeout=timeout)
         except httpx.TimeoutException as exc:
             raise CliError(f"API request timed out after {timeout:.0f}s.") from exc
         response.raise_for_status()
@@ -936,7 +1294,7 @@ def _api_timeout(args: argparse.Namespace) -> float:
 
 @contextmanager
 def _release_spinner(args: argparse.Namespace):
-    if args.mode != RELEASE_MODE or not sys.stdout.isatty():
+    if not mode_uses_release_spinner(args.mode) or not sys.stdout.isatty():
         yield
         return
 
@@ -973,6 +1331,7 @@ def _generate_without_api(args: argparse.Namespace, provided_context: str | None
         "model": _effective_model(args.model),
         "prompt": prompt,
         "stream": False,
+        "think": False,
         "options": options.to_ollama_options(),
     }
     with httpx.Client() as client:
@@ -989,7 +1348,7 @@ def _generate_without_api(args: argparse.Namespace, provided_context: str | None
         "validation_status": "not_run",
         "trace": ["request_received", "direct_ollama", "response_ready"],
     }
-    if args.mode == "debug" or bool(getattr(args, "debug_trace", False)):
+    if is_debug_mode(args.mode) or bool(getattr(args, "debug_trace", False)):
         response_payload["debug"] = {
             "prompt_package": {
                 "prompt": prompt,
@@ -1021,7 +1380,7 @@ def _api_request_payload(args: argparse.Namespace, provided_context: str | None)
     payload: dict[str, object] = {
         "task_text": args.task,
         "provided_context": provided_context,
-        "debug": args.mode == "debug" or bool(getattr(args, "debug_trace", False)),
+        "debug": is_debug_mode(args.mode) or bool(getattr(args, "debug_trace", False)),
         "mode": args.mode,
         "repair_budget": getattr(args, "repair_budget", DEFAULT_REPAIR_BUDGET),
     }
@@ -1036,14 +1395,26 @@ def _api_request_payload(args: argparse.Namespace, provided_context: str | None)
     runtime_options = _runtime_options_payload_from_args(args)
     if runtime_options is not None:
         payload["runtime_options"] = runtime_options
+    clarifications = getattr(args, "clarifications", None)
+    if clarifications:
+        payload["clarifications"] = clarifications
+    feedback_text = getattr(args, "feedback_text", None)
+    if feedback_text is not None:
+        payload["feedback_text"] = feedback_text
+    previous_candidate = getattr(args, "previous_candidate", None)
+    if previous_candidate is not None:
+        payload["previous_candidate"] = previous_candidate
+    assisted_repair_option_id = getattr(args, "assisted_repair_option_id", None)
+    if assisted_repair_option_id is not None:
+        payload["assisted_repair_option_id"] = assisted_repair_option_id
     if args.allow_cloud_model:
         payload["allow_cloud_model"] = True
     return payload
 
 
 def _runtime_options_payload_from_args(args: argparse.Namespace) -> dict[str, int | float] | None:
-    if args.mode == RELEASE_MODE:
-        return RuntimeOptions.release_defaults().to_ollama_options()
+    if not mode_allows_runtime_overrides(args.mode):
+        return default_runtime_options_for_mode(args.mode).to_ollama_options()
     if args.num_ctx is None and args.num_predict is None and args.batch is None and args.temperature is None:
         return None
     options = _runtime_options_from_args(args)
@@ -1051,9 +1422,9 @@ def _runtime_options_payload_from_args(args: argparse.Namespace) -> dict[str, in
 
 
 def _runtime_options_from_args(args: argparse.Namespace) -> RuntimeOptions:
-    if args.mode == RELEASE_MODE:
-        return RuntimeOptions.release_defaults()
-    defaults = RuntimeOptions.from_env()
+    if not mode_allows_runtime_overrides(args.mode):
+        return default_runtime_options_for_mode(args.mode)
+    defaults = default_runtime_options_for_mode(args.mode)
     return RuntimeOptions(
         num_ctx=args.num_ctx or defaults.num_ctx,
         num_predict=args.num_predict or defaults.num_predict,

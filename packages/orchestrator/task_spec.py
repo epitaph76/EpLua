@@ -23,6 +23,7 @@ class TaskSpec:
     edge_cases: tuple[str, ...]
     clarification_required: bool
     clarification_question: str | None = None
+    clarification_questions: tuple[dict[str, object], ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -37,6 +38,7 @@ class TaskSpec:
             "edge_cases": list(self.edge_cases),
             "clarification_required": self.clarification_required,
             "clarification_question": self.clarification_question,
+            "clarification_questions": [_question_to_dict(question) for question in self.clarification_questions],
         }
 
 
@@ -57,6 +59,16 @@ def build_task_spec(
     expected_shape = _resolve_expected_shape(archetype=archetype, operation=operation, output_mode=output_mode)
     edge_cases = _resolve_edge_cases(operation=operation, risk_tags=normalized_risk_tags)
     clarification_question = _default_clarification_question(normalized_language) if clarification_required else None
+    clarification_questions: tuple[dict[str, object], ...] = ()
+    if clarification_question is not None:
+        clarification_questions = (
+            {
+                "id": "clarification_question",
+                "question": clarification_question,
+                "options": (),
+                "default_option_id": None,
+            },
+        )
 
     return TaskSpec(
         task_text=task_text,
@@ -70,7 +82,18 @@ def build_task_spec(
         edge_cases=edge_cases,
         clarification_required=clarification_required,
         clarification_question=clarification_question,
+        clarification_questions=clarification_questions,
     )
+
+
+def _question_to_dict(question: dict[str, object]) -> dict[str, object]:
+    options = question.get("options")
+    return {
+        "id": question.get("id"),
+        "question": question.get("question"),
+        "options": [dict(option) for option in options] if isinstance(options, tuple) else list(options or []),
+        "default_option_id": question.get("default_option_id"),
+    }
 
 
 def _resolve_operation(task_text: str, *, archetype: str, output_mode: str) -> str:

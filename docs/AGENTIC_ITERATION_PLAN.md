@@ -75,26 +75,19 @@ planner -> prompter -> generator -> deterministic_validation -> repair_generatio
 
 ### 4.1. Slash commands
 
-Предлагаемый набор:
+Текущий минимальный набор вокруг planning:
 
 ```text
 /plan
-/plan on
-/plan off
 /feedback <text>
-/assist on
-/assist off
 /repair-budget <number>
-/clarification-budget <number>
 ```
 
 Значения по умолчанию:
 
 ```text
 plan_mode = off
-assist = on
 repair_budget = 2
-clarification_budget = 1
 user_assisted_budget = 1
 ```
 

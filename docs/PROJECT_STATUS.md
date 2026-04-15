@@ -9,18 +9,21 @@
 Фактический API pipeline:
 
 ```text
-planner -> prompter -> generator -> deterministic_validation -> optional repair_generation
+planner -> prompter -> generator -> deterministic_validation -> semantic_validation -> optional repair_generation
 ```
 
 Ключевые свойства:
 
 - `/health`, `/generate`, `/generate/progress`;
+- `/plan` с one-shot clarifier/planner preflight;
 - LowCode JSON contract `lua{...}lua`;
-- planner/propmter agent layers;
+- planner/prompter agent layers;
+- semantic critic после deterministic validation;
 - generator truncation guard на `num_predict`;
 - deterministic validators;
 - bounded repair budget;
-- CLI с debug/release режимами;
+- assisted repair после exhausted repair loop;
+- CLI с режимами `release`, `releaseSlim`, `debug` и one-shot `/plan`;
 - Docker Compose runtime с Ollama + API;
 - benchmark runner и артефакты `7_progon`.
 
@@ -28,6 +31,7 @@ planner -> prompter -> generator -> deterministic_validation -> optional repair_
 
 - Локальная генерация через Ollama.
 - Release mode с запретом cloud model tags.
+- releaseSlim как compact release-like preset без GPU pin.
 - Debug mode с возможностью cloud tags только через явный `--allow-cloud-model`.
 - Live progress по слоям API.
 - Human-readable CLI output без повреждения raw candidate.

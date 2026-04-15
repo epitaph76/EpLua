@@ -13,7 +13,6 @@ from packages.shared.language import natural_language_name
 
 LOWCODE_LUA_EXPECTED_RESULT_FORMAT = "Верни только JSON object. Каждое значение, которое содержит Lua, должно быть строкой в формате lua{<Lua код>}lua."
 LOWCODE_LUA_FORBIDDEN_PATTERNS = (
-    "markdown",
     "пояснения вне JSON object",
     "print/debug output",
     "error()",
@@ -36,12 +35,14 @@ def build_lowcode_prompt_builder_result(
     task_text: str,
     provided_context: str | None,
     planner_result: PlannerResult | None,
+    clarifications: tuple[dict[str, object], ...] = (),
 ) -> PromptBuilderResult:
     return PromptBuilderResult(
         agent_prompt=build_lowcode_generator_agent_prompt(
             task_text=task_text,
             provided_context=provided_context,
             planner_result=planner_result,
+            clarifications=clarifications,
         ),
         expected_result_format=LOWCODE_LUA_EXPECTED_RESULT_FORMAT,
         forbidden_patterns=LOWCODE_LUA_FORBIDDEN_PATTERNS,
@@ -54,6 +55,7 @@ def build_lowcode_generator_agent_prompt(
     task_text: str,
     provided_context: str | None,
     planner_result: PlannerResult | None,
+    clarifications: tuple[dict[str, object], ...] = (),
 ) -> AgentPrompt:
     system_sections = [_lowcode_lua_system_prompt()]
     if planner_result is not None:
@@ -63,7 +65,7 @@ def build_lowcode_generator_agent_prompt(
         agent_name="generator",
         messages=(
             AgentMessage(role="system", content="\n".join(system_sections).strip()),
-            AgentMessage(role="user", content=_lowcode_lua_user_prompt(task_text, provided_context)),
+            AgentMessage(role="user", content=_lowcode_lua_user_prompt(task_text, provided_context, clarifications)),
         ),
     )
 
@@ -228,6 +230,7 @@ def build_lowcode_prompter_agent_prompt(
     provided_context: str | None,
     planner_result: PlannerResult,
     fallback_result: PromptBuilderResult,
+    clarifications: tuple[dict[str, object], ...] = (),
 ) -> AgentPrompt:
     system_prompt = "\n".join(
         [
@@ -237,26 +240,35 @@ def build_lowcode_prompter_agent_prompt(
             "Текущий generator prompt уже содержит жёсткий LowCode-контракт, ограничения и формат ответа.",
             "Не переписывай и не повторяй полный generator prompt.",
             "Верни только короткие добавления, которые помогут generator точнее решить задачу.",
+            "Задача пользователя и TaskSpec важнее любых твоих добавлений.",
+            "Не меняй семантику задачи и не переформулируй операции над полями в другой тип операции.",
+            "Если есть риск противоречия исходной задаче, не добавляй такую подсказку.",
             "Не добавляй подсказки, которые просят бросать/возвращать ошибку или вызывать error().",
             "Пиши добавления на русском языке.",
             'Форма ответа: {"sys":["короткая системная подсказка"],"user":["короткая пользовательская подсказка"]}',
         ]
     )
-    user_prompt = "\n".join(
+    user_sections = [
+        "TaskSpec:",
+        json.dumps(planner_result.task_spec.to_dict(), ensure_ascii=False, separators=(",", ":")),
+        "Task intents:",
+        json.dumps(list(planner_result.task_intents), ensure_ascii=False, separators=(",", ":")),
+        "Задача пользователя:",
+        task_text,
+        "Фрагмент контекста:",
+        _compact_context_excerpt(provided_context),
+    ]
+    clarification_block = _format_structured_clarifications(clarifications)
+    if clarification_block:
+        user_sections.extend(["Уточнения пользователя:", clarification_block])
+    user_sections.extend(
         [
-            "TaskSpec:",
-            json.dumps(planner_result.task_spec.to_dict(), ensure_ascii=False, separators=(",", ":")),
-            "Task intents:",
-            json.dumps(list(planner_result.task_intents), ensure_ascii=False, separators=(",", ":")),
-            "Задача пользователя:",
-            task_text,
-            "Фрагмент контекста:",
-            _compact_context_excerpt(provided_context),
             "Сводка текущего generator prompt:",
             json.dumps(_prompt_builder_summary(fallback_result), ensure_ascii=False, separators=(",", ":")),
             "Верни только добавления; полный generator prompt будет собран локально.",
         ]
     )
+    user_prompt = "\n".join(user_sections)
     return AgentPrompt(
         agent_name="prompter",
         messages=(
@@ -421,6 +433,77 @@ def build_repair_prompter_agent_prompt(
             AgentMessage(role="user", content=user_prompt),
         ),
     )
+
+
+def build_assisted_repair_summarizer_agent_prompt(
+    *,
+    task_text: str,
+    planner_result: PlannerResult,
+    latest_candidate: str,
+    validation_pass: dict[str, object],
+    critic_report: dict[str, object],
+    validation_history: tuple[dict[str, object], ...],
+) -> AgentPrompt:
+    system_prompt = "\n".join(
+        [
+            "You are the assisted repair summarizer agent for the luaMTS validation pipeline.",
+            "Do not generate Lua code.",
+            f"Use {natural_language_name(planner_result.language)} for all user-facing text.",
+            "Explain the failure briefly and propose the next user-visible repair options.",
+            "Return one compact JSON object only, without markdown or extra prose.",
+            'Required JSON shape: {"summary":"short user-facing summary","options":[{"id":"snake_case","label":"short label","effect":"what the next wide repair should change"}]}',
+            "Prefer two concrete options plus one custom option.",
+            "Keep options grounded in validation failures, critic repair instruction, and repair history summary.",
+        ]
+    )
+    user_prompt = "\n".join(
+        [
+            "original task:",
+            task_text,
+            "task_spec:",
+            json.dumps(planner_result.task_spec.to_dict(), ensure_ascii=False, separators=(",", ":")),
+            "latest candidate:",
+            latest_candidate,
+            "validation failures:",
+            json.dumps(_compact_validation_pass_for_repair(validation_pass), ensure_ascii=False, separators=(",", ":")),
+            "critic repair instruction:",
+            json.dumps(_assisted_repair_critic_summary(critic_report), ensure_ascii=False, separators=(",", ":")),
+            "repair history summary:",
+            json.dumps(_assisted_repair_history_summary(validation_history), ensure_ascii=False, separators=(",", ":")),
+            "Return only the compact JSON object.",
+        ]
+    )
+    return AgentPrompt(
+        agent_name="assisted_repair_summarizer",
+        messages=(
+            AgentMessage(role="system", content=system_prompt),
+            AgentMessage(role="user", content=user_prompt),
+        ),
+    )
+
+
+def apply_assisted_repair_summarizer_agent_response(
+    raw_response: str,
+    fallback_request: dict[str, object],
+) -> dict[str, object] | None:
+    payload = _extract_json_payload(raw_response)
+    if payload is None:
+        return None
+
+    summary = payload.get("summary")
+    if not isinstance(summary, str) or not summary.strip():
+        return None
+
+    options = _assisted_repair_options_from_payload(payload, fallback_request)
+    if not options:
+        return None
+
+    return {
+        "summary": summary.strip(),
+        "options": options,
+        "failure_classes": list(fallback_request.get("failure_classes") or []),
+        "latest_candidate": fallback_request.get("latest_candidate"),
+    }
 
 
 def apply_prompter_agent_response(
@@ -612,6 +695,95 @@ def _validation_bundle_summary(validation_bundle: ValidationBundle) -> dict[str,
     }
 
 
+def _assisted_repair_critic_summary(critic_report: dict[str, object]) -> dict[str, object]:
+    return {
+        "action": critic_report.get("action"),
+        "failure_class": critic_report.get("failure_class"),
+        "message": critic_report.get("message"),
+        "repair_prompt": critic_report.get("repair_prompt"),
+    }
+
+
+def _assisted_repair_history_summary(validation_history: tuple[dict[str, object], ...]) -> list[dict[str, object]]:
+    summary: list[dict[str, object]] = []
+    for validation_pass in validation_history:
+        summary.append(
+            {
+                "phase": validation_pass.get("phase"),
+                "failure_classes": _failure_classes_from_validation_pass(validation_pass),
+                "reports": _compact_validation_pass_for_repair(validation_pass),
+            }
+        )
+    return summary
+
+
+def _failure_classes_from_validation_pass(validation_pass: dict[str, object]) -> list[str]:
+    classes: list[str] = []
+    for report_key in ("format_report", "syntax_report", "static_report", "principle_report", "rule_report"):
+        report = validation_pass.get(report_key)
+        if not isinstance(report, dict):
+            continue
+        findings = report.get("findings")
+        if not isinstance(findings, list):
+            continue
+        for finding in findings:
+            if not isinstance(finding, dict):
+                continue
+            failure_class = finding.get("failure_class")
+            if isinstance(failure_class, str) and failure_class and failure_class not in classes:
+                classes.append(failure_class)
+    return classes
+
+
+def _assisted_repair_options_from_payload(
+    payload: dict[str, Any],
+    fallback_request: dict[str, object],
+) -> list[dict[str, str]] | None:
+    raw_options = payload.get("options")
+    if not isinstance(raw_options, list):
+        return None
+
+    normalized: list[dict[str, str]] = []
+    seen_ids: set[str] = set()
+    for raw_option in raw_options:
+        if not isinstance(raw_option, dict):
+            continue
+        option_id = str(raw_option.get("id") or "").strip()
+        label = str(raw_option.get("label") or "").strip()
+        effect = str(raw_option.get("effect") or "").strip()
+        if not option_id or not label or not effect or option_id in seen_ids:
+            continue
+        normalized.append(
+            {
+                "id": option_id,
+                "label": label,
+                "effect": effect,
+            }
+        )
+        seen_ids.add(option_id)
+        if len(normalized) == 3:
+            break
+
+    fallback_options = fallback_request.get("options")
+    fallback_custom = None
+    if isinstance(fallback_options, list):
+        for option in fallback_options:
+            if isinstance(option, dict) and option.get("id") == "custom":
+                fallback_custom = {
+                    "id": str(option.get("id") or ""),
+                    "label": str(option.get("label") or ""),
+                    "effect": str(option.get("effect") or ""),
+                }
+                break
+
+    if fallback_custom is not None and not any(option["id"] == "custom" for option in normalized):
+        if len(normalized) >= 3:
+            normalized = normalized[:2]
+        normalized.append(fallback_custom)
+
+    return normalized or None
+
+
 def _compact_validation_pass_for_repair(validation_pass: dict[str, object]) -> dict[str, object]:
     return {
         "phase": validation_pass.get("phase"),
@@ -706,11 +878,40 @@ def _format_lowcode_task_plan(planner_result: PlannerResult) -> str:
     return "\n".join(lines)
 
 
-def _lowcode_lua_user_prompt(task_text: str, provided_context: str | None) -> str:
+def _lowcode_lua_user_prompt(
+    task_text: str,
+    provided_context: str | None,
+    clarifications: tuple[dict[str, object], ...] = (),
+) -> str:
     sections = ["Задача:", task_text]
+    clarification_block = _format_structured_clarifications(clarifications)
+    if clarification_block:
+        sections.extend(["", "Уточнения пользователя:", clarification_block])
     if provided_context:
         sections.extend(["", "Контекст:", provided_context])
     return "\n".join(sections)
+
+
+def _format_structured_clarifications(clarifications: tuple[dict[str, object], ...]) -> str:
+    if not clarifications:
+        return ""
+
+    lines: list[str] = []
+    for clarification in clarifications:
+        question_id = clarification.get("question_id")
+        option_id = clarification.get("option_id")
+        free_text = clarification.get("free_text")
+        if not isinstance(question_id, str) or not question_id.strip():
+            continue
+        answer = option_id if isinstance(option_id, str) and option_id.strip() else None
+        extra = free_text.strip() if isinstance(free_text, str) and free_text.strip() else None
+        if answer and extra:
+            lines.append(f"- {question_id}: {answer} ({extra})")
+        elif answer:
+            lines.append(f"- {question_id}: {answer}")
+        elif extra:
+            lines.append(f"- {question_id}: {extra}")
+    return "\n".join(lines)
 
 
 def _lowcode_lua_system_prompt() -> str:

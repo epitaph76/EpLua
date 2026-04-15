@@ -9,6 +9,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.append(str(REPO_ROOT))
 
 from packages.orchestrator.task_spec import TaskSpec  # noqa: E402
+from packages.orchestrator.prompter import LOWCODE_LUA_FORBIDDEN_PATTERNS  # noqa: E402
 from packages.validators import core  # noqa: E402
 
 
@@ -57,6 +58,30 @@ def test_lowcode_json_rejects_lua_error_calls() -> None:
     assert report.status == "fail"
     assert report.findings[0].failure_class == "runtime_error_call"
     assert report.findings[0].suggestion == "Return nil, false, or an empty string instead of throwing an error."
+
+
+def test_validate_static_allows_markdown_domain_identifiers(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(core, "_resolve_tool_binary", lambda env_var, default: None)
+
+    report = core.validate_static(
+        "\n".join(
+            [
+                "local result = _utils.array.new()",
+                "for _, item in ipairs(wf.vars.parsedCsv) do",
+                "  local markdown = item.Markdown",
+                '  if (item.Discount ~= nil and item.Discount ~= "") or (markdown ~= nil and markdown ~= "") then',
+                "    table.insert(result, item)",
+                "  end",
+                "end",
+                "return result",
+            ]
+        ),
+        output_mode=core.RAW_LUA,
+        allowed_data_roots=("wf.vars.parsedCsv",),
+        forbidden_patterns=LOWCODE_LUA_FORBIDDEN_PATTERNS,
+    )
+
+    assert report.status == "pass"
 
 
 def test_validate_syntax_surfaces_stylua_failure(monkeypatch: pytest.MonkeyPatch) -> None:

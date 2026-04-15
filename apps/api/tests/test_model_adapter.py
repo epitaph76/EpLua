@@ -213,7 +213,7 @@ class UnavailableHttpClient:
 
 def test_ollama_adapter_calls_local_generate_endpoint(monkeypatch) -> None:
     monkeypatch.setenv("OLLAMA_BASE_URL", "http://localhost:11434")
-    monkeypatch.setenv("OLLAMA_MODEL", "qwen2.5-coder:3b")
+    monkeypatch.setenv("OLLAMA_MODEL", "qwen3.5:9b")
     monkeypatch.delenv("OLLAMA_REQUEST_TIMEOUT", raising=False)
 
     http_client = FakeHttpClient()
@@ -226,14 +226,20 @@ def test_ollama_adapter_calls_local_generate_endpoint(monkeypatch) -> None:
         {
             "url": "http://localhost:11434/api/generate",
             "json": {
-                "model": "qwen2.5-coder:3b",
+                "model": "qwen3.5:9b",
                 "prompt": "make a LocalScript\n\ninventory payload",
                 "stream": False,
+                "think": False,
                 "options": {
                     "num_ctx": 4096,
                     "num_predict": 256,
                     "batch": 1,
-                    "temperature": 0.8,
+                    "temperature": 0.7,
+                    "top_p": 0.8,
+                    "top_k": 20,
+                    "min_p": 0.0,
+                    "presence_penalty": 1.5,
+                    "repeat_penalty": 1.0,
                 },
             },
             "timeout": 180.0,
@@ -243,7 +249,7 @@ def test_ollama_adapter_calls_local_generate_endpoint(monkeypatch) -> None:
 
 def test_ollama_adapter_defaults_to_loopback_ip_base_url(monkeypatch) -> None:
     monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
-    monkeypatch.setenv("OLLAMA_MODEL", "qwen2.5-coder:3b")
+    monkeypatch.setenv("OLLAMA_MODEL", "qwen3.5:9b")
     monkeypatch.delenv("OLLAMA_REQUEST_TIMEOUT", raising=False)
 
     http_client = FakeHttpClient()
@@ -258,7 +264,7 @@ def test_ollama_adapter_defaults_to_loopback_ip_base_url(monkeypatch) -> None:
 
 def test_ollama_adapter_allows_docker_service_hostname(monkeypatch) -> None:
     monkeypatch.setenv("OLLAMA_BASE_URL", "http://ollama:11434")
-    monkeypatch.setenv("OLLAMA_MODEL", "qwen2.5-coder:3b")
+    monkeypatch.setenv("OLLAMA_MODEL", "qwen3.5:9b")
 
     http_client = FakeHttpClient()
     adapter = OllamaModelAdapter(http_client=http_client)
@@ -271,7 +277,7 @@ def test_ollama_adapter_allows_docker_service_hostname(monkeypatch) -> None:
 
 def test_ollama_adapter_uses_env_override_for_request_timeout(monkeypatch) -> None:
     monkeypatch.setenv("OLLAMA_BASE_URL", "http://localhost:11434")
-    monkeypatch.setenv("OLLAMA_MODEL", "qwen2.5-coder:3b")
+    monkeypatch.setenv("OLLAMA_MODEL", "qwen3.5:9b")
     monkeypatch.setenv("OLLAMA_REQUEST_TIMEOUT", "240")
 
     http_client = FakeHttpClient()
@@ -315,7 +321,7 @@ def test_ollama_adapter_allows_cloud_model_in_debug_with_explicit_flag(monkeypat
 
 def test_ollama_adapter_falls_back_to_local_cli_when_http_api_is_unavailable(monkeypatch) -> None:
     monkeypatch.setenv("OLLAMA_BASE_URL", "http://localhost:11434")
-    monkeypatch.setenv("OLLAMA_MODEL", "qwen2.5-coder:3b")
+    monkeypatch.setenv("OLLAMA_MODEL", "qwen3.5:9b")
 
     recorded_commands: list[list[str]] = []
 
@@ -338,13 +344,13 @@ def test_ollama_adapter_falls_back_to_local_cli_when_http_api_is_unavailable(mon
 
     assert code == 'print("Hello, World!")'
     assert recorded_commands == [
-        ["ollama", "run", "qwen2.5-coder:3b", "Return a one-line Lua print statement."]
+        ["ollama", "run", "--think=false", "qwen3.5:9b", "Return a one-line Lua print statement."]
     ]
 
 
 def test_ollama_adapter_enforces_raw_lua_mode_prompt_and_normalizes_response(monkeypatch) -> None:
     monkeypatch.setenv("OLLAMA_BASE_URL", "http://localhost:11434")
-    monkeypatch.setenv("OLLAMA_MODEL", "qwen2.5-coder:3b")
+    monkeypatch.setenv("OLLAMA_MODEL", "qwen3.5:9b")
 
     http_client = RecordingHttpClient(
         "Here is the Lua you asked for:\n```lua\nreturn wf.vars.emails[#wf.vars.emails]\n```\n"
@@ -366,6 +372,7 @@ def test_ollama_adapter_enforces_raw_lua_mode_prompt_and_normalizes_response(mon
         "http://localhost:11434/api/chat",
         "http://localhost:11434/api/chat",
     ]
+    assert all(call["json"]["think"] is False for call in http_client.calls)
     prompt, _messages = _recorded_agent_prompt(http_client)
     assert "Task:" in prompt
     assert "Из полученного списка email получи последний." in prompt
@@ -378,7 +385,7 @@ def test_ollama_adapter_enforces_raw_lua_mode_prompt_and_normalizes_response(mon
 
 def test_ollama_adapter_retries_planner_when_agent_output_hits_num_predict_budget(monkeypatch) -> None:
     monkeypatch.setenv("OLLAMA_BASE_URL", "http://localhost:11434")
-    monkeypatch.setenv("OLLAMA_MODEL", "qwen2.5-coder:3b")
+    monkeypatch.setenv("OLLAMA_MODEL", "qwen3.5:9b")
 
     http_client = SequencedPayloadHttpClient(
         [
@@ -447,7 +454,7 @@ def test_ollama_adapter_retries_planner_when_agent_output_hits_num_predict_budge
 
 def test_ollama_adapter_retries_agentic_generate_prompt_when_output_hits_num_predict_budget(monkeypatch) -> None:
     monkeypatch.setenv("OLLAMA_BASE_URL", "http://localhost:11434")
-    monkeypatch.setenv("OLLAMA_MODEL", "qwen2.5-coder:3b")
+    monkeypatch.setenv("OLLAMA_MODEL", "qwen3.5:9b")
 
     http_client = SequencedPayloadHttpClient(
         [
@@ -484,7 +491,7 @@ def test_ollama_adapter_retries_agentic_generate_prompt_when_output_hits_num_pre
 
 def test_ollama_adapter_exposes_prompt_generation_metadata_without_retrying(monkeypatch) -> None:
     monkeypatch.setenv("OLLAMA_BASE_URL", "http://localhost:11434")
-    monkeypatch.setenv("OLLAMA_MODEL", "qwen2.5-coder:3b")
+    monkeypatch.setenv("OLLAMA_MODEL", "qwen3.5:9b")
 
     http_client = SequencedPayloadHttpClient(
         [
@@ -512,7 +519,7 @@ def test_ollama_adapter_exposes_prompt_generation_metadata_without_retrying(monk
 
 def test_ollama_adapter_falls_back_to_legacy_prompt_when_agent_chat_content_is_empty(monkeypatch) -> None:
     monkeypatch.setenv("OLLAMA_BASE_URL", "http://localhost:11434")
-    monkeypatch.setenv("OLLAMA_MODEL", "qwen2.5-coder:3b")
+    monkeypatch.setenv("OLLAMA_MODEL", "qwen3.5:9b")
 
     http_client = EmptyAgentChatFallbackHttpClient(
         '{"op":"last_array_item","mode":"raw_lua","roots":["wf.vars.emails"],"shape":"scalar_or_nil","risks":["array_indexing","empty_array"],"edges":["single_item","empty_array"],"clar":false,"q":null,"intents":[]}'
@@ -539,7 +546,7 @@ def test_ollama_adapter_falls_back_to_legacy_prompt_when_agent_chat_content_is_e
 
 def test_ollama_adapter_switches_to_clarification_when_data_roots_are_ambiguous(monkeypatch) -> None:
     monkeypatch.setenv("OLLAMA_BASE_URL", "http://localhost:11434")
-    monkeypatch.setenv("OLLAMA_MODEL", "qwen2.5-coder:3b")
+    monkeypatch.setenv("OLLAMA_MODEL", "qwen3.5:9b")
 
     http_client = RecordingHttpClient(
         "Какой источник данных использовать: wf.vars.emails или wf.initVariables.recallTime?"
@@ -562,7 +569,7 @@ def test_ollama_adapter_switches_to_clarification_when_data_roots_are_ambiguous(
 
 def test_ollama_adapter_normalizes_json_wrapper_mode(monkeypatch) -> None:
     monkeypatch.setenv("OLLAMA_BASE_URL", "http://localhost:11434")
-    monkeypatch.setenv("OLLAMA_MODEL", "qwen2.5-coder:3b")
+    monkeypatch.setenv("OLLAMA_MODEL", "qwen3.5:9b")
 
     http_client = RecordingHttpClient(
         'Ответ:\n{"lastEmail":"lua{return wf.vars.emails[#wf.vars.emails]}lua"}\n'
@@ -586,7 +593,7 @@ def test_ollama_adapter_normalizes_json_wrapper_mode(monkeypatch) -> None:
 
 def test_ollama_adapter_normalizes_patch_mode(monkeypatch) -> None:
     monkeypatch.setenv("OLLAMA_BASE_URL", "http://localhost:11434")
-    monkeypatch.setenv("OLLAMA_MODEL", "qwen2.5-coder:3b")
+    monkeypatch.setenv("OLLAMA_MODEL", "qwen3.5:9b")
 
     http_client = RecordingHttpClient(
         'Патч:\n{"num":"lua{return tonumber(\'5\')}lua","squared":"lua{local n = tonumber(\'5\')\\nreturn n * n}lua"}'
@@ -613,7 +620,7 @@ def test_ollama_adapter_normalizes_patch_mode(monkeypatch) -> None:
 
 def test_ollama_adapter_excludes_retrieval_context_from_domain_prompt(monkeypatch) -> None:
     monkeypatch.setenv("OLLAMA_BASE_URL", "http://localhost:11434")
-    monkeypatch.setenv("OLLAMA_MODEL", "qwen2.5-coder:3b")
+    monkeypatch.setenv("OLLAMA_MODEL", "qwen3.5:9b")
 
     http_client = RecordingHttpClient("return wf.vars.emails[#wf.vars.emails]")
     adapter = OllamaModelAdapter(http_client=http_client)
@@ -637,7 +644,7 @@ def test_ollama_adapter_excludes_retrieval_context_from_domain_prompt(monkeypatc
 
 def test_ollama_adapter_includes_resolved_task_intents_in_domain_prompt(monkeypatch) -> None:
     monkeypatch.setenv("OLLAMA_BASE_URL", "http://localhost:11434")
-    monkeypatch.setenv("OLLAMA_MODEL", "qwen2.5-coder:3b")
+    monkeypatch.setenv("OLLAMA_MODEL", "qwen3.5:9b")
 
     http_client = RecordingHttpClient("return wf.vars.RESTbody.result")
     adapter = OllamaModelAdapter(http_client=http_client)
@@ -705,3 +712,4 @@ def _string_leaves(node: object) -> list[str]:
     if isinstance(node, str):
         return [node]
     return []
+

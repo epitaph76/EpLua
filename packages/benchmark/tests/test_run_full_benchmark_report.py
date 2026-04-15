@@ -19,7 +19,7 @@ def test_default_benchmark_report_path_does_not_overwrite_locked_5th_baseline() 
 def test_default_benchmark_model_is_local_when_env_is_missing(monkeypatch) -> None:
     monkeypatch.delenv("OLLAMA_MODEL", raising=False)
 
-    assert report_script._default_model() == "qwen2.5-coder:3b"
+    assert report_script._default_model() == "qwen3.5:9b"
 
 
 def test_release_benchmark_rejects_cloud_model() -> None:
@@ -71,3 +71,4 @@ def test_full_benchmark_report_omits_exact_match_metrics(tmp_path, monkeypatch) 
     report = json.loads(output_path.read_text(encoding="utf-8"))
     assert "exact_match" not in report["cases"][0]
     assert "exact_match_count" not in report["summary"]
+

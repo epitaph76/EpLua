@@ -70,6 +70,12 @@ docker compose exec api luamts
 docker compose exec api luamts generate --mode release --task "Из массива emails верни последний email." --context '{"wf":{"vars":{"emails":["a@example.com","b@example.com"]}}}'
 ```
 
+Компактный release-like пресет без GPU pin:
+
+```bash
+docker compose exec api luamts generate --mode releaseSlim --task "Из массива emails верни последний email." --context '{"wf":{"vars":{"emails":["a@example.com","b@example.com"]}}}'
+```
+
 Debug-пример:
 
 ```bash
@@ -99,22 +105,24 @@ API_PUBLISHED_PORT=18011 OLLAMA_PUBLISHED_PORT=21434 docker compose up --build
 По умолчанию:
 
 ```text
-OLLAMA_MODEL=qwen2.5-coder:3b
+OLLAMA_MODEL=qwen3.5:9b
 ```
+
+Это официальный Ollama tag с quantization `Q4_K_M`. При первом запуске `ollama-model-init` выполняет `ollama pull qwen3.5:9b` внутри Docker volume `ollama-data`; прежняя дефолтная модель больше не нужна для Docker-контура.
 
 Переопределение:
 
 PowerShell:
 
 ```powershell
-$env:OLLAMA_MODEL='qwen2.5-coder:3b'
+$env:OLLAMA_MODEL='qwen3.5:9b'
 docker compose up --build
 ```
 
 macOS / Linux:
 
 ```bash
-OLLAMA_MODEL=qwen2.5-coder:3b docker compose up --build
+OLLAMA_MODEL=qwen3.5:9b docker compose up --build
 ```
 
 ## Локальный GGUF
@@ -168,7 +176,7 @@ OLLAMA_NO_CLOUD=0 docker compose up --build
 docker compose exec api luamts generate --mode debug --model qwen3-coder:480b-cloud --allow-cloud-model --task "..."
 ```
 
-Cloud-tags запрещены в release mode даже при `OLLAMA_NO_CLOUD=0`.
+Cloud-tags запрещены в `release` и `releaseSlim` даже при `OLLAMA_NO_CLOUD=0`.
 
 ## Runtime options
 
@@ -178,10 +186,22 @@ Compose defaults:
 OLLAMA_NUM_CTX=4096
 OLLAMA_NUM_PREDICT=256
 OLLAMA_BATCH=1
+OLLAMA_TEMPERATURE=0.7
+OLLAMA_TOP_P=0.8
+OLLAMA_TOP_K=20
+OLLAMA_MIN_P=0.0
+OLLAMA_PRESENCE_PENALTY=1.5
+OLLAMA_REPEAT_PENALTY=1.0
 OLLAMA_PARALLEL=1
 ```
 
-В release mode API добавляет GPU-only option `num_gpu=-1`, чтобы не использовать CPU offload. В debug mode это ограничение не применяется, чтобы можно было диагностировать модели и cloud-tags.
+API отправляет в Ollama top-level `think: false` для `/api/generate` и `/api/chat`, чтобы Qwen3.5 работала в non-thinking режиме.
+
+Режимы runtime:
+
+- `release` - фиксированные compact defaults плюс `num_gpu=-1`, чтобы не использовать CPU offload;
+- `releaseSlim` - те же compact defaults, но без `num_gpu`, поэтому CPU offload не блокируется;
+- `debug` - без release-only GPU pin, с возможностью менять runtime options и локально диагностировать cloud-tags.
 
 ## Проверка compose-файла
 
@@ -201,3 +221,4 @@ docker compose down
 ```
 
 Эти команды одинаковы для Windows PowerShell, macOS и Linux, кроме синтаксиса переменных окружения, который указан выше.
+

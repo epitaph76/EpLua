@@ -13,6 +13,9 @@ from services import generation as generation_module
 from services.generation import GenerationService
 
 
+SEMANTIC_PASS_RESPONSE = '{"status":"pass","message":"Semantic validation passed."}'
+
+
 class ScriptedModelAdapter:
     def __init__(self, responses: list[str]) -> None:
         self._responses = responses
@@ -195,6 +198,92 @@ class CompactAgentProtocolModelAdapter(ScriptedModelAdapter):
         return self._next_response()
 
 
+class StructuredQuestionPlannerModelAdapter(ScriptedModelAdapter):
+    def generate_from_agent(self, agent_prompt: AgentPrompt) -> str:
+        self.agent_calls.append(
+            {
+                "agent": agent_prompt.agent_name,
+                "messages": agent_prompt.to_messages_payload(),
+                "legacy_prompt": agent_prompt.to_legacy_prompt(),
+            }
+        )
+        if agent_prompt.agent_name == "clarifier":
+            return '{"clar":false,"questions":[]}'
+        if agent_prompt.agent_name == "planner":
+            return json.dumps(
+                {
+                    "arch": "datetime_conversion",
+                    "op": "datetime_formatting",
+                    "mode": "clarification",
+                    "roots": ["wf.vars.date", "wf.vars.time"],
+                    "shape": "clarification_question",
+                    "risks": ["invalid_date", "invalid_time"],
+                    "edges": ["invalid_format"],
+                    "clar": True,
+                    "questions": [
+                        {
+                            "id": "invalid_datetime_behavior",
+                            "question": "Что вернуть, если дата или время некорректны?",
+                            "options": [
+                                {"id": "empty_string", "label": "пустую строку", "description": ""},
+                                {"id": "nil", "label": "nil", "description": ""},
+                            ],
+                            "default_option_id": "empty_string",
+                        }
+                    ],
+                    "intents": ["datetime_conversion"],
+                },
+                ensure_ascii=False,
+            )
+        raise AssertionError(f"unexpected agent call: {agent_prompt.agent_name}")
+
+
+class ClarifierQuestionModelAdapter(ScriptedModelAdapter):
+    def generate_from_agent(self, agent_prompt: AgentPrompt) -> str:
+        self.agent_calls.append(
+            {
+                "agent": agent_prompt.agent_name,
+                "messages": agent_prompt.to_messages_payload(),
+                "legacy_prompt": agent_prompt.to_legacy_prompt(),
+            }
+        )
+        if agent_prompt.agent_name == "clarifier":
+            return json.dumps(
+                {
+                    "clar": True,
+                    "questions": [
+                        {
+                            "id": "empty_array_behavior",
+                            "question": "Что вернуть, если список email пустой?",
+                            "options": [
+                                {"id": "nil", "label": "nil", "description": ""},
+                                {"id": "empty_string", "label": "пустую строку", "description": ""},
+                            ],
+                            "default_option_id": "nil",
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            )
+        if agent_prompt.agent_name == "planner":
+            return json.dumps(
+                {
+                    "arch": "simple_extraction",
+                    "op": "last_array_item",
+                    "mode": "lowcode_json",
+                    "roots": ["wf.vars.emails"],
+                    "shape": "scalar_or_nil",
+                    "risks": ["array_indexing"],
+                    "edges": ["empty_array"],
+                    "clar": False,
+                    "questions": [],
+                    "intents": ["extract_last_email"],
+                },
+                ensure_ascii=False,
+            )
+        raise AssertionError(f"unexpected agent call: {agent_prompt.agent_name}")
+
+
 class RussianPrompterPatchModelAdapter(ScriptedModelAdapter):
     def generate_from_agent(self, agent_prompt: AgentPrompt) -> str:
         self.agent_calls.append(
@@ -228,7 +317,73 @@ class RussianPrompterPatchModelAdapter(ScriptedModelAdapter):
                 },
                 ensure_ascii=False,
             )
+        if agent_prompt.agent_name == "semantic_critic":
+            return SEMANTIC_PASS_RESPONSE
+        if agent_prompt.agent_name == "assisted_repair_summarizer":
+            return ""
         return self._next_response()
+
+
+class AgenticAssistedRepairSummarizerModelAdapter(RussianPrompterPatchModelAdapter):
+    def generate_from_agent(self, agent_prompt: AgentPrompt) -> str:
+        self.agent_calls.append(
+            {
+                "agent": agent_prompt.agent_name,
+                "messages": agent_prompt.to_messages_payload(),
+                "legacy_prompt": agent_prompt.to_legacy_prompt(),
+            }
+        )
+        if agent_prompt.agent_name == "planner":
+            return json.dumps(
+                {
+                    "arch": "simple_extraction",
+                    "op": "last_array_item",
+                    "mode": "raw_lua",
+                    "roots": ["wf.vars.emails"],
+                    "shape": "scalar_or_nil",
+                    "risks": ["array_indexing", "empty_array"],
+                    "edges": ["single_item", "empty_array"],
+                    "clar": False,
+                    "q": None,
+                    "intents": [],
+                },
+                ensure_ascii=False,
+            )
+        if agent_prompt.agent_name == "prompter":
+            return json.dumps(
+                {
+                    "sys": ["Учитывай TaskSpec: нужно вернуть последний элемент массива, а не весь массив."],
+                    "user": ["Используй Lua-индексацию wf.vars.emails[#wf.vars.emails]."],
+                },
+                ensure_ascii=False,
+            )
+        if agent_prompt.agent_name == "semantic_critic":
+            return SEMANTIC_PASS_RESPONSE
+        if agent_prompt.agent_name == "assisted_repair_summarizer":
+            return json.dumps(
+                {
+                    "summary": "Код всё ещё приходит с markdown-ограждениями вместо чистого raw_lua.",
+                    "options": [
+                        {
+                            "id": "return_plain_output",
+                            "label": "Убрать markdown",
+                            "effect": "Вернуть только raw_lua без markdown и пояснений.",
+                        },
+                        {
+                            "id": "simplify_result",
+                            "label": "Упростить результат",
+                            "effect": "Сохранить цель пользователя, но выбрать более простую форму результата.",
+                        },
+                        {
+                            "id": "custom",
+                            "label": "Свой вариант",
+                            "effect": "Пользователь вводит свою инструкцию для следующей итерации.",
+                        },
+                    ],
+                },
+                ensure_ascii=False,
+            )
+        raise AssertionError(f"unexpected agent call: {agent_prompt.agent_name}")
 
 
 class TruncatedGeneratorContinuationModelAdapter(RussianPrompterPatchModelAdapter):
@@ -281,9 +436,6 @@ class EmptyPlannerPatchPrompterModelAdapter(ScriptedModelAdapter):
         return self._next_response()
 
 
-SEMANTIC_PASS_RESPONSE = '{"status":"pass","message":"Semantic validation passed."}'
-
-
 def _default_planner_response(agent_prompt: AgentPrompt) -> str:
     user_message = agent_prompt.messages[1].content
     lowered = user_message.lower()
@@ -318,6 +470,8 @@ def _default_planner_response(agent_prompt: AgentPrompt) -> str:
 
 
 def _planned_output_mode(lowered_prompt: str) -> str:
+    if '"output_mode":"lowcode_json"' in lowered_prompt:
+        return "lowcode_json"
     if '"output_mode":"patch_mode"' in lowered_prompt:
         return "patch_mode"
     if '"output_mode":"json_wrapper"' in lowered_prompt:
@@ -438,6 +592,287 @@ def test_planner_agent_accepts_compact_response_keys() -> None:
     assert result.task_spec.edge_cases == ("empty_array",)
 
 
+def test_planner_agent_accepts_lowcode_json_output_mode() -> None:
+    fallback = plan_task(
+        "Get the last email from the list.",
+        '{"wf":{"vars":{"emails":["user@example.com"]}}}',
+        language="en",
+        archetype="simple_extraction",
+        output_mode="raw_lua",
+        input_roots=["wf.vars.emails"],
+        risk_tags=("array_indexing",),
+    )
+
+    result = apply_planner_agent_response(
+        '{"op":"last_array_item","mode":"lowcode_json","roots":["wf.vars.emails"],"shape":"scalar_or_nil","edges":["empty_array"],"clar":false}',
+        fallback,
+    )
+
+    assert result.source == "agent"
+    assert result.task_spec.operation == "last_array_item"
+    assert result.task_spec.output_mode == "lowcode_json"
+    assert result.task_spec.input_roots == ("wf.vars.emails",)
+    assert result.task_spec.expected_shape == "scalar_or_nil"
+    assert result.task_spec.edge_cases == ("empty_array",)
+
+
+def test_planner_agent_accepts_structured_questions() -> None:
+    fallback = plan_task(
+        "Преобразуй дату и время в ISO 8601.",
+        '{"wf":{"vars":{"date":"2026-04-14","time":"10:11:12"}}}',
+        language="ru",
+        archetype="datetime_conversion",
+        output_mode="raw_lua",
+        input_roots=["wf.vars.date", "wf.vars.time"],
+        risk_tags=("invalid_date",),
+    )
+
+    result = apply_planner_agent_response(
+        json.dumps(
+            {
+                "arch": "datetime_conversion",
+                "op": "datetime_formatting",
+                "mode": "clarification",
+                "roots": ["wf.vars.date", "wf.vars.time"],
+                "shape": "clarification_question",
+                "risks": ["invalid_date", "invalid_time"],
+                "edges": ["invalid_format"],
+                "clar": True,
+                "questions": [
+                    {
+                        "id": "invalid_datetime_behavior",
+                        "question": "Что вернуть, если дата или время некорректны?",
+                        "options": [
+                            {"id": "empty_string", "label": "пустую строку", "description": ""},
+                            {"id": "nil", "label": "nil", "description": ""},
+                        ],
+                        "default_option_id": "empty_string",
+                    }
+                ],
+                "intents": ["datetime_conversion"],
+            },
+            ensure_ascii=False,
+        ),
+        fallback,
+    )
+
+    assert result.source == "agent"
+    assert result.task_spec.output_mode == "clarification"
+    assert result.task_spec.clarification_required is True
+    assert result.task_spec.clarification_questions == (
+        {
+            "id": "invalid_datetime_behavior",
+            "question": "Что вернуть, если дата или время некорректны?",
+            "options": (
+                {"id": "empty_string", "label": "пустую строку", "description": ""},
+                {"id": "nil", "label": "nil", "description": ""},
+            ),
+            "default_option_id": "empty_string",
+        },
+    )
+
+
+def test_generation_service_plan_returns_questions_without_generator_call() -> None:
+    model_adapter = StructuredQuestionPlannerModelAdapter([])
+    service = GenerationService(model_adapter=model_adapter)
+
+    result = service.plan(
+        task_text="Преобразуй DATUM и TIME в ISO 8601.",
+        provided_context=json.dumps({"wf": {"vars": {"date": "2026-04-14", "time": "10:11:12"}}}),
+        debug=True,
+    )
+
+    assert result["trace"] == ["request_received", "clarifier", "planner", "response_ready"]
+    assert result["clarification_required"] is True
+    assert result["questions"] == [
+        {
+            "id": "invalid_datetime_behavior",
+            "question": "Что вернуть, если дата или время некорректны?",
+            "options": [
+                {"id": "empty_string", "label": "пустую строку", "description": ""},
+                {"id": "nil", "label": "nil", "description": ""},
+            ],
+            "default_option_id": "empty_string",
+        }
+    ]
+    assert result["task_spec"]["clarification_questions"] == [
+        {
+            "id": "invalid_datetime_behavior",
+            "question": "Что вернуть, если дата или время некорректны?",
+            "options": [
+                {"id": "empty_string", "label": "пустую строку", "description": ""},
+                {"id": "nil", "label": "nil", "description": ""},
+            ],
+            "default_option_id": "empty_string",
+        }
+    ]
+    assert model_adapter.prompts == []
+    assert [call["agent"] for call in model_adapter.agent_calls] == ["clarifier", "planner"]
+    assert result["debug"]["clarifier_result"]["clarification_required"] is False
+    assert result["debug"]["planner_result"]["clarification_required"] is True
+
+
+def test_generation_service_plan_uses_clarifier_agent_for_targeted_questions() -> None:
+    model_adapter = ClarifierQuestionModelAdapter([])
+    service = GenerationService(model_adapter=model_adapter)
+
+    result = service.plan(
+        task_text="Из полученного списка email получи последний.",
+        provided_context=json.dumps({"wf": {"vars": {"emails": ["a@example.com", "b@example.com"]}}}),
+        debug=True,
+    )
+
+    assert result["trace"] == ["request_received", "clarifier", "planner", "response_ready"]
+    assert result["clarification_required"] is True
+    assert result["questions"] == [
+        {
+            "id": "empty_array_behavior",
+            "question": "Что вернуть, если список email пустой?",
+            "options": [
+                {"id": "nil", "label": "nil", "description": ""},
+                {"id": "empty_string", "label": "пустую строку", "description": ""},
+            ],
+            "default_option_id": "nil",
+        }
+    ]
+    assert result["task_spec"]["operation"] == "last_array_item"
+    assert result["task_spec"]["clarification_required"] is True
+    assert result["task_spec"]["clarification_question"] == "Что вернуть, если список email пустой?"
+    assert result["task_spec"]["clarification_questions"] == result["questions"]
+    assert [call["agent"] for call in model_adapter.agent_calls] == ["clarifier", "planner"]
+    assert result["debug"]["clarifier_result"]["source"] == "agent"
+    assert result["debug"]["planner_result"]["task_spec"]["operation"] == "last_array_item"
+
+
+def test_generation_service_feedback_rerun_marks_trace_and_replans() -> None:
+    model_adapter = RussianPrompterPatchModelAdapter(
+        [
+            '{"result":"lua{return wf.vars.emails[#wf.vars.emails]}lua"}',
+        ]
+    )
+    service = GenerationService(model_adapter=model_adapter)
+
+    result = service.generate(
+        task_text="Get the last email from the list.",
+        provided_context=json.dumps({"wf": {"vars": {"emails": ["a@example.com", "b@example.com"]}}}),
+        input_roots=["wf.vars.emails"],
+        feedback_text="Если массив пустой, верни nil.",
+        previous_candidate='{"result":"lua{return wf.vars.emails[#wf.vars.emails]}lua"}',
+        debug=True,
+    )
+
+    assert result["validation_status"] == "passed"
+    assert result["trace"] == [
+        "request_received",
+        "feedback_received",
+        "planner",
+        "prompter",
+        "generation",
+        "deterministic_validation",
+        "semantic_validation",
+        "response_ready",
+    ]
+    assert [call["agent"] for call in model_adapter.agent_calls] == ["planner", "prompter", "semantic_critic"]
+    planner_prompt = model_adapter.agent_calls[0]["legacy_prompt"]
+    assert "Исходная задача:" in planner_prompt
+    assert "Предыдущий кандидат:" in planner_prompt
+    assert "Обратная связь пользователя:" in planner_prompt
+    assert "Если массив пустой, верни nil." in planner_prompt
+
+
+def test_generation_service_defaults_lowcode_json_mode_for_lowcode_path() -> None:
+    model_adapter = ScriptedModelAdapter(
+        [
+            '{"result":"lua{return wf.vars.emails[#wf.vars.emails]}lua"}',
+            SEMANTIC_PASS_RESPONSE,
+        ]
+    )
+    service = GenerationService(model_adapter=model_adapter)
+
+    result = service.generate(
+        task_text="Get the last email from the list.",
+        provided_context=json.dumps({"wf": {"vars": {"emails": ["a@example.com", "b@example.com"]}}}),
+        debug=True,
+    )
+
+    assert result["validation_status"] == "passed"
+    assert result["output_mode"] == "lowcode_json"
+    assert [call["agent"] for call in model_adapter.agent_calls] == ["planner", "prompter", "semantic_critic"]
+    planner_prompt = model_adapter.agent_calls[0]["legacy_prompt"]
+    assert '"output_mode":"lowcode_json"' in planner_prompt
+    assert '"mode":"lowcode_json"' in planner_prompt
+
+
+def test_generation_service_runs_semantic_critic_after_deterministic_validation() -> None:
+    class SemanticFailModelAdapter(RussianPrompterPatchModelAdapter):
+        def __init__(self, responses: list[str], semantic_response: str) -> None:
+            super().__init__(responses)
+            self._semantic_response = semantic_response
+
+        def generate_from_agent(self, agent_prompt: AgentPrompt) -> str:
+            if agent_prompt.agent_name != "semantic_critic":
+                return super().generate_from_agent(agent_prompt)
+            self.agent_calls.append(
+                {
+                    "agent": agent_prompt.agent_name,
+                    "messages": agent_prompt.to_messages_payload(),
+                    "legacy_prompt": agent_prompt.to_legacy_prompt(),
+                }
+            )
+            return self._semantic_response
+
+    candidate = '{"result":"lua{return wf.vars.emails[1]}lua"}'
+    semantic_fail = (
+        '{"s":"fail","c":"semantic_mismatch",'
+        '"m":"Кандидат возвращает первый элемент, а нужно вернуть последний email.",'
+        '"fix":"Верни wf.vars.emails[#wf.vars.emails]."}'
+    )
+    model_adapter = SemanticFailModelAdapter([candidate], semantic_fail)
+    service = GenerationService(model_adapter=model_adapter)
+
+    result = service.generate(
+        task_text="Get the last email from the list.",
+        provided_context=json.dumps({"wf": {"vars": {"emails": ["a@example.com", "b@example.com"]}}}),
+        archetype="simple_extraction",
+        output_mode="raw_lua",
+        input_roots=["wf.vars.emails"],
+        repair_budget=1,
+        debug=True,
+    )
+
+    assert result["validation_status"] == "failed"
+    assert result["stop_reason"] == "repair_exhausted"
+    assert result["trace"][:7] == [
+        "request_received",
+        "planner",
+        "prompter",
+        "generation",
+        "deterministic_validation",
+        "semantic_validation",
+        "assisted_repair_summarizer",
+    ]
+    assert result["critic_report"]["action"] == "repair"
+    assert result["critic_report"]["failure_class"] == "semantic_mismatch"
+    first_iteration = result["validator_report"]["iterations"][0]
+    assert first_iteration["rule_report"]["status"] == "pass"
+    assert first_iteration["semantic_report"]["status"] == "fail"
+    assert first_iteration["semantic_report"]["findings"][0]["failure_class"] == "semantic_mismatch"
+    assert [call["agent"] for call in model_adapter.agent_calls] == [
+        "planner",
+        "prompter",
+        "semantic_critic",
+        "assisted_repair_summarizer",
+    ]
+    semantic_prompt = model_adapter.agent_calls[2]["legacy_prompt"]
+    assert "Validators:" in semantic_prompt
+    assert "Candidate:" in semantic_prompt
+    assert candidate in semantic_prompt
+    debug = result["debug"]
+    assert debug is not None
+    assert [call["phase"] for call in debug["model_calls"]] == ["generation", "semantic_validation"]
+    assert debug["model_calls"][1]["agent"] == "semantic_critic"
+
+
 def test_generation_service_adds_russian_prompter_context_to_lowcode_generator_prompt() -> None:
     model_adapter = RussianPrompterPatchModelAdapter(
         [
@@ -476,6 +911,7 @@ def test_generation_service_adds_russian_prompter_context_to_lowcode_generator_p
         "prompter",
         "generation",
         "deterministic_validation",
+        "semantic_validation",
         "response_ready",
     ]
     assert result["validator_report"]["status"] == "pass"
@@ -485,7 +921,7 @@ def test_generation_service_adds_russian_prompter_context_to_lowcode_generator_p
     assert result["clarification_count"] == 0
     assert result["output_mode"] == "raw_lua"
     assert result["archetype"] == "simple_extraction"
-    assert [call["agent"] for call in model_adapter.agent_calls] == ["planner", "prompter"]
+    assert [call["agent"] for call in model_adapter.agent_calls] == ["planner", "prompter", "semantic_critic"]
     assert len(model_adapter.prompts) == 1
 
     debug = result["debug"]
@@ -519,19 +955,22 @@ def test_generation_service_adds_russian_prompter_context_to_lowcode_generator_p
         "prompter",
         "generator",
         "deterministic_validation",
+        "semantic_critic",
     ]
     assert [call["phase"] for call in debug["agent_layer_calls"]] == ["planner", "prompter"]
-    assert debug["model_calls"] == [
-        {
-            "phase": "generation",
-            "agent": "generator",
-            "prompt": debug["prompt_package"]["prompt"],
-            "raw_response": result["code"],
-        }
-    ]
+    assert debug["model_calls"][0] == {
+        "phase": "generation",
+        "agent": "generator",
+        "prompt": debug["prompt_package"]["prompt"],
+        "raw_response": result["code"],
+    }
+    assert debug["model_calls"][1]["phase"] == "semantic_validation"
+    assert debug["model_calls"][1]["agent"] == "semantic_critic"
+    assert debug["model_calls"][1]["semantic_report"]["status"] == "pass"
     assert debug["validation_passes"][0]["format_report"]["status"] == "pass"
     assert debug["validation_passes"][0]["syntax_report"]["status"] == "pass"
     assert debug["validation_passes"][0]["rule_report"]["status"] == "pass"
+    assert debug["validation_passes"][0]["semantic_report"]["status"] == "pass"
 
 
 def test_generation_service_continues_truncated_generator_output_before_validation(
@@ -728,6 +1167,7 @@ def test_generation_service_stops_after_bounded_invalid_lowcode_json_repairs() -
     ]
     assert result["trace"].count("repair_prompter") == 0
     assert result["trace"].count("repair_generation") == 1
+    assert "assisted_repair_summarizer" in result["trace"]
     assert result["trace"][-1] == "response_ready"
     assert result["repair_count"] == 1
     assert result["code"].startswith("```json")
@@ -735,6 +1175,28 @@ def test_generation_service_stops_after_bounded_invalid_lowcode_json_repairs() -
     assert result["critic_report"]["action"] == "repair"
     assert result["critic_report"]["failure_class"] == "markdown_fence"
     assert "repair_prompt" in result["critic_report"]
+    assisted_repair_request = result["assisted_repair_request"]
+    assert isinstance(assisted_repair_request, dict)
+    assert assisted_repair_request["failure_classes"] == ["markdown_fence"]
+    assert assisted_repair_request["latest_candidate"] == result["code"]
+    assert "markdown" in str(assisted_repair_request["summary"]).lower()
+    options = assisted_repair_request["options"]
+    assert options[0]["id"] == "return_plain_output"
+    assert options[0]["label"] == "Убрать markdown"
+    assert "json object" in str(options[0]["effect"]).lower()
+    assert "lowcode_json" in str(options[0]["effect"]).lower()
+    assert options[1:] == [
+        {
+            "id": "simplify_result",
+            "label": "Упростить результат",
+            "effect": "Сохранить цель пользователя, но выбрать более простую форму результата и убрать лишнюю структуру.",
+        },
+        {
+            "id": "custom",
+            "label": "Свой вариант",
+            "effect": "Пользователь вводит свою инструкцию для следующей широкой итерации.",
+        },
+    ]
     assert len(result["validator_report"]["iterations"]) == 2
     first_iteration = result["validator_report"]["iterations"][0]
     assert first_iteration["format_report"]["status"] == "fail"
@@ -742,8 +1204,101 @@ def test_generation_service_stops_after_bounded_invalid_lowcode_json_repairs() -
     assert first_iteration["syntax_report"]["status"] == "skipped"
     debug = result["debug"]
     assert debug is not None
+    assert [call["agent"] for call in model_adapter.agent_calls] == [
+        "planner",
+        "prompter",
+        "assisted_repair_summarizer",
+    ]
+    assert debug["agent_layer_calls"][-1]["phase"] == "assisted_repair_summarizer"
+    assert debug["agent_layer_calls"][-1]["assisted_repair_request"]["source"] == "deterministic_fallback"
     assert debug["validation_passes"][0]["candidate"] == result["code"]
     assert debug["validation_passes"][0]["format_report"]["findings"][0]["failure_class"] == "markdown_fence"
+
+
+def test_generation_service_uses_agent_for_assisted_repair_summary_after_repair_exhausted() -> None:
+    invalid_candidate = "\n".join(
+        [
+            "```json",
+            "{",
+            '  "raw_lua": {',
+            '    "value": "',
+            "      local emails = wf.vars.emails",
+            "      if emails and #emails > 0 then",
+            "        return emails[#emails]",
+            "      else",
+            "        return nil",
+            "      end",
+            '    "',
+            "  }",
+            "}",
+            "```",
+        ]
+    )
+    model_adapter = AgenticAssistedRepairSummarizerModelAdapter([invalid_candidate] * 2)
+    service = GenerationService(model_adapter=model_adapter)
+
+    result = service.generate(
+        task_text="Из полученного json списка email получи последний.",
+        provided_context=json.dumps(
+            {
+                "wf": {
+                    "vars": {
+                        "emails": [
+                            "user1@example.com",
+                            "user2@example.com",
+                            "user3@example.com",
+                        ]
+                    }
+                }
+            }
+        ),
+        archetype="simple_extraction",
+        output_mode="raw_lua",
+        input_roots=["wf.vars.emails"],
+        risk_tags=["array_indexing", "empty_array"],
+        debug=True,
+    )
+
+    assert result["validation_status"] == "failed"
+    assert result["stop_reason"] == "repair_exhausted"
+    assert result["trace"][-2:] == ["assisted_repair_summarizer", "response_ready"]
+    assert result["assisted_repair_request"] == {
+        "summary": "Код всё ещё приходит с markdown-ограждениями вместо чистого raw_lua.",
+        "failure_classes": ["markdown_fence"],
+        "options": [
+            {
+                "id": "return_plain_output",
+                "label": "Убрать markdown",
+                "effect": "Вернуть только raw_lua без markdown и пояснений.",
+            },
+            {
+                "id": "simplify_result",
+                "label": "Упростить результат",
+                "effect": "Сохранить цель пользователя, но выбрать более простую форму результата.",
+            },
+            {
+                "id": "custom",
+                "label": "Свой вариант",
+                "effect": "Пользователь вводит свою инструкцию для следующей итерации.",
+            },
+        ],
+        "latest_candidate": result["code"],
+    }
+    assert [call["agent"] for call in model_adapter.agent_calls] == [
+        "planner",
+        "prompter",
+        "assisted_repair_summarizer",
+    ]
+    summarizer_prompt = model_adapter.agent_calls[2]["legacy_prompt"]
+    assert "repair history summary" in summarizer_prompt
+    assert "validation failures" in summarizer_prompt
+    debug = result["debug"]
+    assert debug is not None
+    assert [call["phase"] for call in debug["agent_layer_calls"]] == [
+        "planner",
+        "prompter",
+        "assisted_repair_summarizer",
+    ]
 
 
 def test_generation_service_repairs_invalid_lowcode_json_contract_directly_with_generator() -> None:
@@ -796,11 +1351,11 @@ def test_generation_service_repairs_invalid_lowcode_json_contract_directly_with_
     assert result["critic_report"]["action"] == "finalize"
     assert "repair_prompter" not in result["trace"]
     assert "repair_generation" in result["trace"]
-    assert [call["agent"] for call in model_adapter.agent_calls] == ["planner", "prompter"]
+    assert [call["agent"] for call in model_adapter.agent_calls] == ["planner", "prompter", "semantic_critic"]
 
     debug = result["debug"]
     assert debug is not None
-    assert [call["phase"] for call in debug["model_calls"]] == ["generation", "repair_generation"]
+    assert [call["phase"] for call in debug["model_calls"]] == ["generation", "repair_generation", "semantic_validation"]
     assert [call["phase"] for call in debug["agent_layer_calls"]] == ["planner", "prompter"]
     assert "Текущий невалидный candidate:" in debug["model_calls"][1]["prompt"]
     assert "Инструкция critic:" in debug["model_calls"][1]["prompt"]

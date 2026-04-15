@@ -12,6 +12,8 @@
 - запрещает JsonPath, markdown, пояснения вокруг JSON, `print/debug output` и `error()`;
 - проверяет результат через validation pipeline;
 - делает bounded repair без бесконечного цикла;
+- после исчерпания repair budget может запросить user-assisted repair;
+- поддерживает one-shot planning через `/plan`;
 - показывает debug trace по слоям pipeline;
 - запускается локально через Docker Compose и Ollama.
 
@@ -27,6 +29,7 @@ request_received
 -> prompter
 -> generation
 -> deterministic_validation
+-> semantic_validation
 -> response_ready
 ```
 
@@ -36,16 +39,21 @@ request_received
 deterministic_validation
 -> repair_generation
 -> deterministic_validation
+-> semantic_validation
 -> response_ready
 ```
 
 По умолчанию repair budget равен `2`: первая генерация плюс один repair-generation проход. Значение можно менять в CLI/debug-запросах.
+
+Если repair budget исчерпан и задача всё ещё не прошла validation, interactive CLI может показать краткое assisted-repair summary и предложить следующую широкую итерацию по выбору пользователя.
 
 ### Роли слоёв
 
 `planner` строит компактный `TaskSpec`: операция, output mode, input roots, expected shape, риски и edge cases. Planner не генерирует Lua.
 
 `prompter` не переписывает основной generator prompt. Он добавляет короткие русские подсказки к уже готовому LowCode-контракту. Добавки фильтруются: подсказки вида "бросай ошибку", `error()` и похожие конфликтующие инструкции не попадают в prompt генератора.
+
+`semantic_critic` вызывается только после успешного deterministic validation. Он проверяет, действительно ли candidate делает то, что просил пользователь, и не перепутаны ли поле, операция или итоговая форма ответа.
 
 `generator` получает полный LowCode prompt и возвращает только JSON object. Каждое Lua-значение должно быть строкой вида:
 
@@ -59,7 +67,7 @@ deterministic_validation
 
 `deterministic_validation` включает форматные, синтаксические, статические, principle/domain и rule checks. Для LowCode JSON сначала проверяется валидность JSON и wrapper `lua{...}lua`, затем извлекаются Lua-сегменты и проверяются Lua-правила.
 
-`critic_report` в текущем контуре не является отдельной LLM-генерацией ответа. Он структурирует итог validation pass/fail и говорит pipeline: finalize или repair.
+`critic_report` в текущем контуре остаётся структурированным решением orchestrator-а: finalize или repair. Он опирается на deterministic reports и результат `semantic_critic`.
 
 ## LowCode Lua contract
 
@@ -184,25 +192,27 @@ API_PUBLISHED_PORT=18011 OLLAMA_PUBLISHED_PORT=21434 docker compose up --build
 По умолчанию compose использует локальную модель:
 
 ```text
-qwen2.5-coder:3b
+qwen3.5:9b
 ```
+
+Это официальный Ollama tag с quantization `Q4_K_M`; compose тянет его в Docker volume `ollama-data` через `ollama-model-init`. API отправляет `think: false` в Ollama `/api/generate` и `/api/chat`, поэтому Qwen3.5 используется в non-thinking режиме.
 
 Переопределение:
 
 Windows PowerShell:
 
 ```powershell
-$env:OLLAMA_MODEL='qwen2.5-coder:3b'
+$env:OLLAMA_MODEL='qwen3.5:9b'
 docker compose up --build
 ```
 
 macOS / Linux:
 
 ```bash
-OLLAMA_MODEL=qwen2.5-coder:3b docker compose up --build
+OLLAMA_MODEL=qwen3.5:9b docker compose up --build
 ```
 
-Cloud-tags вида `*-cloud` запрещены в release mode. Они допустимы только для debug-разработки с явным `--allow-cloud-model` и не являются конкурсным runtime.
+Cloud-tags вида `*-cloud` запрещены в `release` и `releaseSlim`. Они допустимы только для debug-разработки с явным `--allow-cloud-model` и не являются конкурсным runtime.
 
 ## Локальный запуск без Docker
 
@@ -249,18 +259,24 @@ luamts
 ```text
 /debug
 /release
-/model qwen2.5-coder:3b
+/release-slim
+/model qwen3.5:9b
 /model n
 /allow-cloud on
 /repair-budget 2
 /with-api
 /without-api
+/plan
+/feedback <text>
+/status
 /exit
 ```
 
 `/model n` возвращает стандартную модель.
 
-В debug mode CLI показывает прогресс по слоям во время работы API. В release mode отображается минимальный progress/spinner и итоговый статус.
+`/plan` включает planning preflight только для следующего запроса. После выполнения задачи флаг автоматически сбрасывается. В status-строке CLI это видно как `Plan: on` или `Plan: off`.
+
+В debug mode CLI показывает прогресс по слоям во время работы API. В release mode отображается минимальный progress/spinner и итоговый статус. В `releaseSlim` status-строка компактнее: без `Params`.
 
 CLI умеет принимать многострочную вставку JSON-контекста в интерактивном вводе. Человекочитаемый вывод результата разворачивает `\n` в реальные строки, но debug JSON печатается без изменения JSON-экранирования.
 
@@ -355,7 +371,9 @@ docker compose config
 - Конкурсный/release runtime должен быть локальным.
 - Внешние AI API запрещены.
 - Ollama cloud-tags допустимы только в debug-разработке и только явно.
-- Release mode фиксирует компактные параметры: `num_ctx=4096`, `num_predict=256`, `batch=1`, `parallel=1`.
+- Release mode фиксирует компактные параметры: `num_ctx=4096`, `num_predict=256`, `batch=1`, `parallel=1`, `num_gpu=-1`.
+- `releaseSlim` использует те же компактные параметры, но без `num_gpu=-1`, поэтому CPU offload не блокируется.
+- Для Qwen3.5 defaults: `temperature=0.7`, `top_p=0.8`, `top_k=20`, `min_p=0.0`, `presence_penalty=1.5`, `repeat_penalty=1.0`.
 - Debug mode может менять модель, runtime options и cloud guard.
 
 ## Структура
@@ -371,3 +389,4 @@ docker/                    Docker image helpers
 docs/                      architecture and operation docs
 artifacts/benchmark_runs/  generated benchmark reports
 ```
+

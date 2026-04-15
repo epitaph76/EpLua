@@ -1,7 +1,7 @@
 import sys
 import tempfile
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from adapters.model import OllamaModelAdapter
@@ -15,25 +15,34 @@ from packages.orchestrator.agent_prompt import AgentPrompt  # noqa: E402
 from packages.orchestrator.planner import (  # noqa: E402
     PlannerResult,
     apply_planner_agent_response,
+    build_lowcode_clarifier_agent_prompt,
     build_lowcode_planner_agent_prompt,
     plan_task,
+    parse_clarifier_agent_response,
 )
-from packages.orchestrator.critic import build_critic_report  # noqa: E402
+from packages.orchestrator.critic import _localize_text as _localize_critic_text  # noqa: E402
+from packages.orchestrator.critic import (  # noqa: E402
+    build_critic_report,
+    build_semantic_critic_agent_prompt,
+    parse_semantic_critic_response,
+)
 from packages.orchestrator.prompter import (  # noqa: E402
     LOWCODE_LUA_EXPECTED_RESULT_FORMAT,
     PromptBuilderResult,
+    apply_assisted_repair_summarizer_agent_response,
     apply_lowcode_prompter_agent_response,
+    build_assisted_repair_summarizer_agent_prompt,
     build_lowcode_prompt_builder_result,
     build_lowcode_prompter_agent_prompt,
     build_lowcode_repair_prompt_builder_result,
     render_lowcode_generator_prompt,
 )
-from packages.shared.language import DEFAULT_LANGUAGE  # noqa: E402
+from packages.shared.language import DEFAULT_LANGUAGE, normalize_language  # noqa: E402
 from packages.shared.quality import ValidationBundle, ValidatorReport  # noqa: E402
 from packages.validators.core import LOWCODE_JSON, run_validation_pipeline  # noqa: E402
 
 _DEFAULT_ARCHETYPE = "transformation"
-_DEFAULT_OUTPUT_MODE = "raw_lua"
+_DEFAULT_OUTPUT_MODE = LOWCODE_JSON
 _DEFAULT_REPAIR_BUDGET = 2
 _MAX_GENERATOR_CONTINUATIONS = 4
 
@@ -48,6 +57,78 @@ class _PromptGeneration:
 class GenerationService:
     def __init__(self, model_adapter: OllamaModelAdapter | None = None) -> None:
         self._model_adapter = model_adapter or OllamaModelAdapter()
+
+    def plan(
+        self,
+        task_text: str,
+        provided_context: str | None = None,
+        *,
+        archetype: str | None = None,
+        output_mode: str | None = None,
+        input_roots: list[str] | None = None,
+        risk_tags: list[str] | None = None,
+        debug: bool = False,
+        mode: str = RELEASE_MODE,
+        model: str | None = None,
+        runtime_options: dict[str, int | float] | RuntimeOptions | None = None,
+        allow_cloud_model: bool = False,
+        language: str = DEFAULT_LANGUAGE,
+        clarifications: list[dict[str, object]] | None = None,
+    ) -> dict[str, object]:
+        model_adapter = self._adapter_for_request(
+            mode=mode,
+            model=model,
+            runtime_options=runtime_options,
+            allow_cloud_model=allow_cloud_model,
+        )
+        clarifier_questions, clarifier_layer_call, clarifier_debug_result = self._run_clarifier_agent(
+            model_adapter=model_adapter,
+            task_text=task_text,
+            provided_context=provided_context,
+            archetype=archetype,
+            output_mode=output_mode,
+            input_roots=input_roots,
+            risk_tags=risk_tags,
+            language=language,
+            clarifications=clarifications,
+        )
+        planner_result, agent_layer_calls = self._plan_lowcode_task(
+            model_adapter=model_adapter,
+            task_text=task_text,
+            provided_context=provided_context,
+            archetype=archetype,
+            output_mode=output_mode,
+            input_roots=input_roots,
+            risk_tags=risk_tags,
+            language=language,
+            clarifications=clarifications,
+        )
+        if clarifier_layer_call is not None:
+            agent_layer_calls.insert(0, clarifier_layer_call)
+        if clarifier_questions:
+            planner_result = self._planner_result_with_clarifier_questions(
+                planner_result=planner_result,
+                questions=clarifier_questions,
+            )
+        debug_payload = None
+        if debug:
+            debug_payload = {
+                "planner_result": planner_result.to_debug_dict(),
+                "agent_layer_calls": agent_layer_calls,
+            }
+            if clarifier_debug_result is not None:
+                debug_payload["clarifier_result"] = clarifier_debug_result
+        return {
+            "task_spec": planner_result.task_spec.to_dict(),
+            "clarification_required": planner_result.clarification_required,
+            "questions": [self._clarification_question_payload(question) for question in planner_result.task_spec.clarification_questions],
+            "trace": [
+                "request_received",
+                *[str(call["phase"]) for call in agent_layer_calls if call.get("phase") in {"clarifier", "planner"}],
+                "response_ready",
+            ],
+            "debug": debug_payload,
+        }
 
     def generate(
         self,
@@ -64,11 +145,23 @@ class GenerationService:
         runtime_options: dict[str, int | float] | RuntimeOptions | None = None,
         allow_cloud_model: bool = False,
         language: str = DEFAULT_LANGUAGE,
+        clarifications: list[dict[str, object]] | None = None,
+        feedback_text: str | None = None,
+        previous_candidate: str | None = None,
+        assisted_repair_option_id: str | None = None,
         repair_budget: int = _DEFAULT_REPAIR_BUDGET,
         progress_callback: Callable[[str], None] | None = None,
     ) -> dict[str, object]:
         self._emit_progress(progress_callback, "request_received")
         temporary_paths: list[Path] = []
+        effective_task_text = task_text
+        if isinstance(feedback_text, str) and feedback_text.strip():
+            effective_task_text = self._feedback_task_text(
+                task_text=task_text,
+                feedback_text=feedback_text,
+                previous_candidate=previous_candidate,
+                language=language,
+            )
         model_adapter = self._adapter_for_request(
             mode=mode,
             model=model,
@@ -78,13 +171,14 @@ class GenerationService:
         repair_budget = max(1, repair_budget)
         prompt_builder_result, planner_result, agent_layer_calls = self._build_lowcode_prompt_builder_result(
             model_adapter=model_adapter,
-            task_text=task_text,
+            task_text=effective_task_text,
             provided_context=provided_context,
             archetype=archetype,
             output_mode=output_mode,
             input_roots=input_roots,
             risk_tags=risk_tags,
             language=language,
+            clarifications=clarifications,
             progress_callback=progress_callback,
         )
         prompt = render_lowcode_generator_prompt(prompt_builder_result.agent_prompt)
@@ -107,19 +201,39 @@ class GenerationService:
         ]
         trace = [
             "request_received",
+            *(
+                ["assisted_repair_received"]
+                if isinstance(assisted_repair_option_id, str) and assisted_repair_option_id.strip()
+                else []
+            ),
+            *(
+                ["feedback_received"]
+                if (
+                    isinstance(feedback_text, str)
+                    and feedback_text.strip()
+                    and not (isinstance(assisted_repair_option_id, str) and assisted_repair_option_id.strip())
+                )
+                else []
+            ),
             *[str(call["phase"]) for call in agent_layer_calls if call.get("phase") in {"planner", "prompter"}],
             "generation",
         ]
         validation_result = self._run_deterministic_validation(
             candidate=code,
+            prompt=prompt,
             prompt_builder_result=prompt_builder_result,
             planner_result=planner_result,
+            model_adapter=model_adapter,
+            model_calls=model_calls,
             repair_count=0,
             phase="deterministic_validation",
         )
         validation_passes = list(validation_result["validation_passes"])
         trace.append("deterministic_validation")
         self._emit_progress(progress_callback, "deterministic_validation")
+        if validation_result.get("semantic_validation_ran"):
+            trace.append("semantic_validation")
+            self._emit_progress(progress_callback, "semantic_validation")
         repair_count = 0
         generation_pass_count = 1
 
@@ -162,21 +276,43 @@ class GenerationService:
             )
             validation_result = self._run_deterministic_validation(
                 candidate=code,
+                prompt=prompt,
                 prompt_builder_result=repair_prompt_builder_result,
                 planner_result=planner_result,
+                model_adapter=model_adapter,
+                model_calls=model_calls,
                 repair_count=repair_count,
                 phase="deterministic_validation",
             )
             validation_passes.extend(validation_result["validation_passes"])
             trace.append("deterministic_validation")
             self._emit_progress(progress_callback, "deterministic_validation")
+            if validation_result.get("semantic_validation_ran"):
+                trace.append("semantic_validation")
+                self._emit_progress(progress_callback, "semantic_validation")
 
         final_status = str(validation_result["validation_status"])
         stop_reason = str(validation_result["stop_reason"])
+        assisted_repair_request = None
         if final_status == "passed" and repair_count:
             final_status = "repaired"
         elif final_status != "passed" and generation_pass_count >= repair_budget:
             stop_reason = "repair_exhausted"
+            if not (isinstance(assisted_repair_option_id, str) and assisted_repair_option_id.strip()):
+                previous_agent_call_count = len(agent_layer_calls)
+                assisted_repair_request = self._build_assisted_repair_request(
+                    task_text=task_text,
+                    planner_result=planner_result,
+                    latest_candidate=code,
+                    validation_pass=validation_passes[-1],
+                    validation_history=tuple(validation_passes),
+                    critic_report=validation_result["critic_report"],
+                    language=language,
+                    model_adapter=model_adapter,
+                    agent_layer_calls=agent_layer_calls,
+                )
+                if len(agent_layer_calls) > previous_agent_call_count:
+                    trace.append("assisted_repair_summarizer")
         trace.append("response_ready")
         self._emit_progress(progress_callback, "response_ready")
         response_payload = {
@@ -188,6 +324,7 @@ class GenerationService:
             "critic_report": validation_result["critic_report"],
             "repair_count": repair_count,
             "clarification_count": 0,
+            "assisted_repair_request": assisted_repair_request,
             "output_mode": planner_result.task_spec.output_mode,
             "archetype": planner_result.task_spec.archetype,
             "debug": self._build_debug_payload(
@@ -205,6 +342,80 @@ class GenerationService:
         self._cleanup_temporary_paths(temporary_paths)
         return response_payload
 
+    def _run_clarifier_agent(
+        self,
+        *,
+        model_adapter: OllamaModelAdapter,
+        task_text: str,
+        provided_context: str | None,
+        archetype: str | None,
+        output_mode: str | None,
+        input_roots: list[str] | None,
+        risk_tags: list[str] | None,
+        language: str,
+        clarifications: list[dict[str, object]] | None,
+    ) -> tuple[tuple[dict[str, object], ...], dict[str, object] | None, dict[str, object] | None]:
+        if self._clarifications_tuple(clarifications):
+            return tuple(), None, None
+
+        agent_runner = getattr(model_adapter, "generate_from_agent", None)
+        if not callable(agent_runner):
+            return tuple(), None, None
+
+        fallback_result = plan_task(
+            task_text,
+            provided_context,
+            language=language,
+            archetype=archetype or _DEFAULT_ARCHETYPE,
+            output_mode=output_mode or _DEFAULT_OUTPUT_MODE,
+            input_roots=input_roots,
+            risk_tags=tuple(risk_tags or ()),
+            explicit_archetype=archetype is not None,
+            explicit_output_mode=output_mode is not None,
+        )
+        clarifier_agent_prompt = build_lowcode_clarifier_agent_prompt(
+            task_text=task_text,
+            provided_context=provided_context,
+            fallback_result=fallback_result,
+        )
+        clarifier_raw_response = agent_runner(clarifier_agent_prompt)
+        questions = parse_clarifier_agent_response(clarifier_raw_response)
+        debug_result: dict[str, object] = {
+            "agent": "clarifier",
+            "source": "agent" if questions else "agent_no_questions",
+            "clarification_required": bool(questions),
+            "questions": [self._clarification_question_payload(question) for question in questions],
+        }
+        layer_call = self._agent_layer_call(
+            phase="clarifier",
+            agent_prompt=clarifier_agent_prompt,
+            raw_response=clarifier_raw_response,
+            result_key="clarifier_result",
+            result=debug_result,
+        )
+        return questions, layer_call, debug_result
+
+    def _planner_result_with_clarifier_questions(
+        self,
+        *,
+        planner_result: PlannerResult,
+        questions: tuple[dict[str, object], ...],
+    ) -> PlannerResult:
+        first_question = str(questions[0].get("question") or "").strip() if questions else None
+        task_spec = replace(
+            planner_result.task_spec,
+            output_mode="clarification",
+            expected_shape="clarification_question",
+            clarification_required=True,
+            clarification_question=first_question,
+            clarification_questions=questions,
+        )
+        return replace(
+            planner_result,
+            task_spec=task_spec,
+            clarification_required=True,
+        )
+
     def _build_lowcode_prompt_builder_result(
         self,
         *,
@@ -216,10 +427,66 @@ class GenerationService:
         input_roots: list[str] | None,
         risk_tags: list[str] | None,
         language: str,
+        clarifications: list[dict[str, object]] | None,
         progress_callback: Callable[[str], None] | None,
     ) -> tuple[PromptBuilderResult, PlannerResult, list[dict[str, object]]]:
         agent_runner = getattr(model_adapter, "generate_from_agent", None)
+        planner_result, agent_layer_calls = self._plan_lowcode_task(
+            model_adapter=model_adapter,
+            task_text=task_text,
+            provided_context=provided_context,
+            archetype=archetype,
+            output_mode=output_mode,
+            input_roots=input_roots,
+            risk_tags=risk_tags,
+            language=language,
+            clarifications=clarifications,
+        )
+        self._emit_progress(progress_callback, "planner")
+        prompt_builder_result = build_lowcode_prompt_builder_result(
+            task_text=task_text,
+            provided_context=provided_context,
+            planner_result=planner_result,
+            clarifications=self._clarifications_tuple(clarifications),
+        )
+        if callable(agent_runner):
+            prompter_agent_prompt = build_lowcode_prompter_agent_prompt(
+                task_text=task_text,
+                provided_context=provided_context,
+                planner_result=planner_result,
+                fallback_result=prompt_builder_result,
+                clarifications=self._clarifications_tuple(clarifications),
+            )
+            prompter_raw_response = agent_runner(prompter_agent_prompt)
+            prompt_builder_result = apply_lowcode_prompter_agent_response(prompter_raw_response, prompt_builder_result)
+            agent_layer_calls.append(
+                self._agent_layer_call(
+                    phase="prompter",
+                    agent_prompt=prompter_agent_prompt,
+                    raw_response=prompter_raw_response,
+                    result_key="prompt_builder_result",
+                    result=prompt_builder_result.to_debug_dict(),
+                )
+            )
+            self._emit_progress(progress_callback, "prompter")
+        return prompt_builder_result, planner_result, agent_layer_calls
+
+    def _plan_lowcode_task(
+        self,
+        *,
+        model_adapter: OllamaModelAdapter,
+        task_text: str,
+        provided_context: str | None,
+        archetype: str | None,
+        output_mode: str | None,
+        input_roots: list[str] | None,
+        risk_tags: list[str] | None,
+        language: str,
+        clarifications: list[dict[str, object]] | None,
+    ) -> tuple[PlannerResult, list[dict[str, object]]]:
+        agent_runner = getattr(model_adapter, "generate_from_agent", None)
         risk_tags_tuple = tuple(risk_tags or ())
+        clarification_tuple = self._clarifications_tuple(clarifications)
         planner_result = plan_task(
             task_text,
             provided_context,
@@ -237,6 +504,7 @@ class GenerationService:
                 task_text=task_text,
                 provided_context=provided_context,
                 fallback_result=planner_result,
+                clarifications=clarification_tuple,
             )
             planner_raw_response = agent_runner(planner_agent_prompt)
             planner_result = apply_planner_agent_response(planner_raw_response, planner_result)
@@ -249,33 +517,299 @@ class GenerationService:
                     result=planner_result.to_debug_dict(),
                 )
             )
-            self._emit_progress(progress_callback, "planner")
+        return planner_result, agent_layer_calls
 
-        prompt_builder_result = build_lowcode_prompt_builder_result(
+    def _clarifications_tuple(
+        self,
+        clarifications: list[dict[str, object]] | None,
+    ) -> tuple[dict[str, object], ...]:
+        if not clarifications:
+            return tuple()
+        normalized: list[dict[str, object]] = []
+        for clarification in clarifications:
+            if not isinstance(clarification, dict):
+                continue
+            question_id = str(clarification.get("question_id") or "").strip()
+            option_id = str(clarification.get("option_id") or "").strip()
+            free_text = clarification.get("free_text")
+            if not question_id or not option_id:
+                continue
+            payload: dict[str, object] = {
+                "question_id": question_id,
+                "option_id": option_id,
+                "free_text": free_text if isinstance(free_text, str) and free_text.strip() else None,
+            }
+            normalized.append(payload)
+        return tuple(normalized)
+
+    def _clarification_question_payload(self, question: dict[str, object]) -> dict[str, object]:
+        options = question.get("options")
+        return {
+            "id": question.get("id"),
+            "question": question.get("question"),
+            "options": [dict(option) for option in options] if isinstance(options, tuple) else list(options or []),
+            "default_option_id": question.get("default_option_id"),
+        }
+
+    def _feedback_task_text(
+        self,
+        *,
+        task_text: str,
+        feedback_text: str,
+        previous_candidate: str | None,
+        language: str,
+    ) -> str:
+        if language == "en":
+            sections = [
+                "Original task:",
+                task_text,
+                "",
+                "Previous candidate:",
+                previous_candidate or "",
+                "",
+                "User feedback:",
+                feedback_text,
+            ]
+        else:
+            sections = [
+                "Исходная задача:",
+                task_text,
+                "",
+                "Предыдущий кандидат:",
+                previous_candidate or "",
+                "",
+                "Обратная связь пользователя:",
+                feedback_text,
+            ]
+        return "\n".join(sections).strip()
+
+    def _build_assisted_repair_request(
+        self,
+        *,
+        task_text: str,
+        planner_result: PlannerResult,
+        latest_candidate: str,
+        validation_pass: dict[str, object],
+        validation_history: tuple[dict[str, object], ...],
+        critic_report: dict[str, object],
+        language: str,
+        model_adapter: OllamaModelAdapter,
+        agent_layer_calls: list[dict[str, object]],
+    ) -> dict[str, object]:
+        primary_finding = self._first_validation_finding(validation_pass)
+        failure_classes = self._failure_classes_from_validation_pass(validation_pass)
+        summary = self._assisted_repair_summary(primary_finding, critic_report, language)
+        options = self._assisted_repair_options(primary_finding, critic_report, language)
+        fallback_request = {
+            "summary": summary,
+            "failure_classes": failure_classes,
+            "options": options,
+            "latest_candidate": latest_candidate,
+        }
+        agent_runner = getattr(model_adapter, "generate_from_agent", None)
+        if not callable(agent_runner):
+            return fallback_request
+
+        summarizer_prompt = build_assisted_repair_summarizer_agent_prompt(
             task_text=task_text,
-            provided_context=provided_context,
             planner_result=planner_result,
+            latest_candidate=latest_candidate,
+            validation_pass=validation_pass,
+            critic_report=critic_report,
+            validation_history=validation_history,
         )
-        if callable(agent_runner):
-            prompter_agent_prompt = build_lowcode_prompter_agent_prompt(
-                task_text=task_text,
-                provided_context=provided_context,
-                planner_result=planner_result,
-                fallback_result=prompt_builder_result,
+        summarizer_raw_response = agent_runner(summarizer_prompt)
+        assisted_repair_request = apply_assisted_repair_summarizer_agent_response(
+            summarizer_raw_response,
+            fallback_request,
+        )
+        if assisted_repair_request is None:
+            assisted_repair_request = fallback_request
+            debug_result: dict[str, object] = {
+                "source": "deterministic_fallback",
+                "fallback_reason": "assisted_repair_summarizer_invalid_json",
+                **fallback_request,
+            }
+        else:
+            debug_result = {
+                "source": "agent",
+                **assisted_repair_request,
+            }
+        agent_layer_calls.append(
+            self._agent_layer_call(
+                phase="assisted_repair_summarizer",
+                agent_prompt=summarizer_prompt,
+                raw_response=summarizer_raw_response,
+                result_key="assisted_repair_request",
+                result=debug_result,
             )
-            prompter_raw_response = agent_runner(prompter_agent_prompt)
-            prompt_builder_result = apply_lowcode_prompter_agent_response(prompter_raw_response, prompt_builder_result)
-            agent_layer_calls.append(
-                self._agent_layer_call(
-                    phase="prompter",
-                    agent_prompt=prompter_agent_prompt,
-                    raw_response=prompter_raw_response,
-                    result_key="prompt_builder_result",
-                    result=prompt_builder_result.to_debug_dict(),
-                )
-            )
-            self._emit_progress(progress_callback, "prompter")
-        return prompt_builder_result, planner_result, agent_layer_calls
+        )
+        return assisted_repair_request
+
+    def _first_validation_finding(self, validation_pass: dict[str, object]) -> dict[str, object] | None:
+        for report_key in ("format_report", "syntax_report", "static_report", "principle_report", "rule_report"):
+            report = validation_pass.get(report_key)
+            if not isinstance(report, dict):
+                continue
+            findings = report.get("findings")
+            if isinstance(findings, list) and findings:
+                first_finding = findings[0]
+                if isinstance(first_finding, dict):
+                    return first_finding
+        return None
+
+    def _failure_classes_from_validation_pass(self, validation_pass: dict[str, object]) -> list[str]:
+        classes: list[str] = []
+        for report_key in ("format_report", "syntax_report", "static_report", "principle_report", "rule_report"):
+            report = validation_pass.get(report_key)
+            if not isinstance(report, dict):
+                continue
+            findings = report.get("findings")
+            if not isinstance(findings, list):
+                continue
+            for finding in findings:
+                if not isinstance(finding, dict):
+                    continue
+                failure_class = finding.get("failure_class")
+                if isinstance(failure_class, str) and failure_class and failure_class not in classes:
+                    classes.append(failure_class)
+        return classes
+
+    def _assisted_repair_summary(
+        self,
+        primary_finding: dict[str, object] | None,
+        critic_report: dict[str, object],
+        language: str,
+    ) -> str:
+        message = None
+        if primary_finding is not None:
+            message = primary_finding.get("message")
+        if not isinstance(message, str) or not message.strip():
+            message = critic_report.get("message")
+        if isinstance(message, str) and message.strip():
+            return self._localize_assisted_repair_text(message, language)
+        if language == "en":
+            return "The candidate still fails deterministic validation after the short repair loop."
+        return "Кандидат всё ещё не проходит детерминированную проверку после короткого repair loop."
+
+    def _assisted_repair_options(
+        self,
+        primary_finding: dict[str, object] | None,
+        critic_report: dict[str, object],
+        language: str,
+    ) -> list[dict[str, str]]:
+        failure_class = ""
+        suggestion = None
+        if primary_finding is not None:
+            raw_failure_class = primary_finding.get("failure_class")
+            if isinstance(raw_failure_class, str):
+                failure_class = raw_failure_class
+            raw_suggestion = primary_finding.get("suggestion")
+            if isinstance(raw_suggestion, str) and raw_suggestion.strip():
+                suggestion = self._localize_assisted_repair_text(raw_suggestion, language)
+        if suggestion is None:
+            repair_prompt = critic_report.get("repair_prompt")
+            if isinstance(repair_prompt, str) and repair_prompt.strip():
+                suggestion = self._localize_assisted_repair_text(repair_prompt, language)
+
+        if language == "en":
+            fallback_label = "Follow validator hint"
+            fallback_effect = suggestion or "Regenerate the candidate with the validator hint applied explicitly."
+            simplify_label = "Simplify the result"
+            simplify_effect = "Keep the same user goal, but prefer a simpler result shape and avoid extra structure."
+            custom_label = "Custom instruction"
+            custom_effect = "Enter your own instruction for the next wide repair iteration."
+        else:
+            fallback_label = "Учесть замечание валидатора"
+            fallback_effect = suggestion or "Перегенерировать кандидат с явным учётом замечания валидации."
+            simplify_label = "Упростить результат"
+            simplify_effect = "Сохранить цель пользователя, но выбрать более простую форму результата и убрать лишнюю структуру."
+            custom_label = "Свой вариант"
+            custom_effect = "Пользователь вводит свою инструкцию для следующей широкой итерации."
+
+        primary_option = {
+            "id": "follow_validator_hint",
+            "label": fallback_label,
+            "effect": fallback_effect,
+        }
+        if failure_class in {"missing_array_allocator", "missing_filter_result_container"}:
+            primary_option = {
+                "id": "use_lowcode_array",
+                "label": "_utils.array.new()",
+                "effect": suggestion or (
+                    "Перегенерировать с явным требованием сохранить array semantics через _utils.array.new()."
+                    if language != "en"
+                    else "Regenerate with an explicit requirement to preserve array semantics via _utils.array.new()."
+                ),
+            }
+        elif failure_class == "markdown_fence":
+            primary_option = {
+                "id": "return_plain_output",
+                "label": "Убрать markdown" if language != "en" else "Remove markdown",
+                "effect": suggestion or (
+                    "Вернуть только чистый результат без markdown и пояснений."
+                    if language != "en"
+                    else "Return only the plain result without markdown or extra prose."
+                ),
+            }
+        elif failure_class in {"invalid_wrapper", "non_string_lua_value"}:
+            primary_option = {
+                "id": "keep_lowcode_wrapper",
+                "label": "Сохранить lua{...}lua" if language != "en" else "Keep lua{...}lua",
+                "effect": suggestion or (
+                    "Сохранить LowCode JSON-контракт и обернуть код в lua{...}lua."
+                    if language != "en"
+                    else "Keep the LowCode JSON contract and wrap generated code in lua{...}lua."
+                ),
+            }
+        elif failure_class in {"patch_path_keys", "full_rewrite_patch_payload"}:
+            primary_option = {
+                "id": "keep_additive_patch",
+                "label": "Только additive patch" if language != "en" else "Additive patch only",
+                "effect": suggestion or (
+                    "Вернуть только additive patch без переписывания всего payload."
+                    if language != "en"
+                    else "Return only an additive patch without rewriting the full payload."
+                ),
+            }
+
+        return [
+            primary_option,
+            {
+                "id": "simplify_result",
+                "label": simplify_label,
+                "effect": simplify_effect,
+            },
+            {
+                "id": "custom",
+                "label": custom_label,
+                "effect": custom_effect,
+            },
+        ]
+
+    def _localize_assisted_repair_text(self, text: str | None, language: str) -> str:
+        if not isinstance(text, str):
+            return ""
+
+        stripped = text.strip()
+        if not stripped:
+            return ""
+
+        normalized_language = normalize_language(language)
+        localized = _localize_critic_text(stripped, normalized_language)
+        if normalized_language == "en" or localized != stripped:
+            return localized
+
+        if stripped.endswith(" output must not include markdown fences."):
+            output_mode = stripped.removesuffix(" output must not include markdown fences.")
+            return f"{output_mode} не должен содержать markdown-ограждения."
+        if stripped.startswith("Return a plain JSON object for ") and stripped.endswith(" mode."):
+            output_mode = stripped.removeprefix("Return a plain JSON object for ").removesuffix(" mode.")
+            return f"Верни чистый JSON object для режима {output_mode}."
+        if stripped == "Return only Lua code without markdown fences or surrounding prose.":
+            return "Верни только Lua-код без markdown-ограждений и пояснений."
+
+        return stripped
 
     def _agent_layer_call(
         self,
@@ -467,8 +1001,11 @@ class GenerationService:
         self,
         *,
         candidate: str,
+        prompt: str,
         prompt_builder_result: PromptBuilderResult,
         planner_result: PlannerResult,
+        model_adapter: OllamaModelAdapter,
+        model_calls: list[dict[str, object]],
         repair_count: int,
         phase: str,
     ) -> dict[str, object]:
@@ -483,7 +1020,37 @@ class GenerationService:
                 task_spec=planner_result.task_spec,
             )
         )
-        pass_status = format_report.status == "pass" and rule_report.status == "pass"
+        runtime_report = self._skipped_validator_report("runtime_validator", "not_in_current_slice")
+        semantic_report = self._skipped_validator_report("semantic_validator", "deterministic_validation_failed")
+        deterministic_pass = format_report.status == "pass" and rule_report.status == "pass"
+        semantic_validation_ran = False
+        if deterministic_pass:
+            semantic_agent_prompt = build_semantic_critic_agent_prompt(
+                prompt=prompt,
+                candidate=normalized_candidate or candidate.strip(),
+                output_mode=LOWCODE_JSON,
+                task_spec=planner_result.task_spec,
+                format_report=format_report,
+                syntax_report=syntax_report,
+                static_report=static_report,
+                principle_report=principle_report,
+                runtime_report=runtime_report,
+                language=planner_result.language,
+            )
+            semantic_raw_response = model_adapter.generate_from_agent(semantic_agent_prompt)
+            semantic_report = parse_semantic_critic_response(semantic_raw_response)
+            semantic_validation_ran = True
+            model_calls.append(
+                {
+                    "phase": "semantic_validation",
+                    "agent": semantic_agent_prompt.agent_name,
+                    "prompt": semantic_agent_prompt.to_legacy_prompt(),
+                    "messages": semantic_agent_prompt.to_messages_payload(),
+                    "raw_response": semantic_raw_response,
+                    "semantic_report": semantic_report.to_dict(),
+                }
+            )
+        pass_status = deterministic_pass and semantic_report.status == "pass"
         validation_bundle = self._validation_bundle(
             candidate=candidate,
             planner_result=planner_result,
@@ -491,6 +1058,8 @@ class GenerationService:
             syntax_report=syntax_report,
             static_report=static_report,
             principle_report=principle_report,
+            runtime_report=runtime_report,
+            semantic_report=semantic_report,
             rule_report=rule_report,
         )
         critic_report = build_critic_report(
@@ -498,8 +1067,8 @@ class GenerationService:
             syntax_report,
             static_report,
             principle_report,
-            self._skipped_validator_report("runtime_validator", "not_in_current_slice"),
-            self._skipped_validator_report("semantic_validator", "not_in_current_slice"),
+            runtime_report,
+            semantic_report,
             output_mode=LOWCODE_JSON,
             repair_count=repair_count,
             clarification_count=0,
@@ -517,18 +1086,26 @@ class GenerationService:
             syntax_report=syntax_report,
             static_report=static_report,
             principle_report=principle_report,
+            runtime_report=runtime_report,
+            semantic_report=semantic_report,
             rule_report=rule_report,
             critic_report=critic_report,
         )
+        stop_reason = "passed"
+        if not deterministic_pass:
+            stop_reason = "deterministic_validation_failed"
+        elif semantic_report.status != "pass":
+            stop_reason = "semantic_validation_failed"
         return {
             "validation_status": "passed" if pass_status else "failed",
-            "stop_reason": "passed" if pass_status else "deterministic_validation_failed",
+            "stop_reason": stop_reason,
             "validator_report": {
                 "status": "pass" if pass_status else "fail",
                 "iterations": [validation_pass],
             },
             "critic_report": critic_report,
             "validation_passes": [validation_pass],
+            "semantic_validation_ran": semantic_validation_ran,
         }
 
     def _validation_bundle(
@@ -540,10 +1117,10 @@ class GenerationService:
         syntax_report: ValidatorReport,
         static_report: ValidatorReport,
         principle_report: ValidatorReport,
+        runtime_report: ValidatorReport,
+        semantic_report: ValidatorReport,
         rule_report: ValidatorReport,
     ) -> ValidationBundle:
-        runtime_report = self._skipped_validator_report("runtime_validator", "not_in_current_slice")
-        semantic_report = self._skipped_validator_report("semantic_validator", "not_in_current_slice")
         final_failure_classes = self._collect_failure_classes(
             format_report,
             syntax_report,
@@ -598,6 +1175,8 @@ class GenerationService:
         syntax_report: ValidatorReport,
         static_report: ValidatorReport,
         principle_report: ValidatorReport,
+        runtime_report: ValidatorReport,
+        semantic_report: ValidatorReport,
         rule_report: ValidatorReport,
         critic_report: dict[str, object],
     ) -> dict[str, object]:
@@ -608,6 +1187,8 @@ class GenerationService:
             "syntax_report": syntax_report.to_dict(),
             "static_report": static_report.to_dict(),
             "principle_report": principle_report.to_dict(),
+            "runtime_report": runtime_report.to_dict(),
+            "semantic_report": semantic_report.to_dict(),
             "rule_report": rule_report.to_dict(),
             "critic_report": critic_report,
         }
@@ -645,12 +1226,13 @@ class GenerationService:
                 ],
                 *[
                     {
-                        "stage": "generator" if call.get("phase") == "generation" else "repair_generator",
+                        "stage": self._model_call_layer_stage(str(call.get("phase") or "")),
                         "kind": "llm_prompt",
                         "status": "completed",
                         "agent": str(call["agent"]),
                     }
                     for call in model_calls
+                    if call.get("phase") != "semantic_validation"
                 ],
                 {
                     "stage": "deterministic_validation",
@@ -658,11 +1240,30 @@ class GenerationService:
                     "status": "completed",
                     "agent": "validator",
                 },
+                *[
+                    {
+                        "stage": self._model_call_layer_stage(str(call.get("phase") or "")),
+                        "kind": "llm_prompt",
+                        "status": "completed",
+                        "agent": str(call["agent"]),
+                    }
+                    for call in model_calls
+                    if call.get("phase") == "semantic_validation"
+                ],
             ],
             "agent_layer_calls": agent_layer_calls,
             "model_calls": model_calls,
             "validation_passes": validation_passes,
         }
+
+    def _model_call_layer_stage(self, phase: str) -> str:
+        if phase == "generation":
+            return "generator"
+        if phase == "repair_generation":
+            return "repair_generator"
+        if phase == "semantic_validation":
+            return "semantic_critic"
+        return phase
 
     def _adapter_for_request(
         self,

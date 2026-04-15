@@ -18,6 +18,16 @@ POST /generate
 -> GenerationService.generate(...)
 ```
 
+Planning path:
+
+```text
+POST /plan
+-> apps/api/routes/generate.py
+-> GenerationService.plan(...)
+-> clarifier
+-> planner
+```
+
 Live-progress путь:
 
 ```text
@@ -43,6 +53,7 @@ request_received
 -> prompter
 -> generation
 -> deterministic_validation
+-> semantic_validation
 -> response_ready
 ```
 
@@ -56,10 +67,13 @@ request_received
 -> deterministic_validation
 -> repair_generation
 -> deterministic_validation
+-> semantic_validation
 -> response_ready
 ```
 
 `repair_prompter` в текущем API path не используется. Repair идёт напрямую в generator: prompt собирается локально из исходного prompt package, текущего candidate, validation report и critic instruction.
+
+Если repair budget исчерпан, interactive path может закончиться `assisted_repair_summarizer` перед `response_ready`, чтобы показать пользователю краткую сводку проблемы и варианты следующей широкой итерации.
 
 ## 3. Planner
 
@@ -191,6 +205,8 @@ Validation pipeline запускается для output mode `LOWCODE_JSON`.
 - `repair`;
 - bounded failure / stop.
 
+После успешного deterministic validation отдельно вызывается `semantic_critic`. Это LLM-agent, который проверяет смысловое соответствие task semantics: правильное поле, правильную операцию, правильную форму ответа и отсутствие промаха мимо user intent.
+
 Repair prompt строится локально:
 
 - исходная задача;
@@ -254,7 +270,8 @@ Debug progress:
   слой 3: prompter прошёл
   слой 4: generation прошёл
   слой 5: deterministic_validation прошёл
-  слой 6: response_ready прошёл
+  слой 6: semantic_validation прошёл
+  слой 7: response_ready прошёл
 ```
 
 ## 12. LowCode hard rules

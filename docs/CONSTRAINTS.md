@@ -29,6 +29,8 @@ Release/demo контур обязан:
 - не использовать CPU offload в release mode (`num_gpu=-1`);
 - выполнять validation pipeline перед выдачей статуса `passed`.
 
+Дополнительный preset `releaseSlim` тоже остаётся локальным и воспроизводимым через Docker Compose, использует те же compact defaults, но не добавляет `num_gpu=-1`. Это облегчённый release-like режим, а не строгий GPU-only конкурсный runtime.
+
 ## Debug constraints
 
 Debug mode может:

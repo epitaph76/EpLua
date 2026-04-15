@@ -7,8 +7,8 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
 from errors import ApiError
-from runtime_policy import RELEASE_MODE, RuntimeOptions, normalize_mode
-from schemas import GenerateRequest, GenerateResponse
+from runtime_policy import default_runtime_options_for_mode, mode_allows_runtime_overrides
+from schemas import GenerateRequest, GenerateResponse, PlanRequest, PlanResponse
 from services.generation import GenerationService
 from structured_logging import log_event
 
@@ -31,6 +31,22 @@ def generate(
         "generate_completed",
         path="/generate",
         validation_status=response.validation_status,
+        debug=request.debug,
+    )
+    return response
+
+
+@router.post("/plan", response_model=PlanResponse)
+def plan(
+    request: PlanRequest,
+    generation_service: GenerationService = Depends(get_generation_service),
+) -> PlanResponse:
+    log_event("plan_requested", path="/plan", debug=request.debug)
+    response = PlanResponse.model_validate(_run_plan(request, generation_service))
+    log_event(
+        "plan_completed",
+        path="/plan",
+        clarification_required=response.clarification_required,
         debug=request.debug,
     )
     return response
@@ -109,7 +125,22 @@ def _run_generation(
     *,
     progress_callback: Callable[[str], None] | None = None,
 ) -> dict[str, object]:
-    kwargs = {
+    kwargs = _request_kwargs(request)
+    kwargs["repair_budget"] = request.repair_budget
+    if progress_callback is not None:
+        kwargs["progress_callback"] = progress_callback
+    return generation_service.generate(**kwargs)
+
+
+def _run_plan(
+    request: PlanRequest,
+    generation_service: GenerationService,
+) -> dict[str, object]:
+    return generation_service.plan(**_request_kwargs(request))
+
+
+def _request_kwargs(request: GenerateRequest | PlanRequest) -> dict[str, object]:
+    kwargs: dict[str, object] = {
         "task_text": request.task_text,
         "provided_context": request.provided_context,
         "archetype": request.archetype,
@@ -122,16 +153,25 @@ def _run_generation(
         "runtime_options": _runtime_options_payload(request),
         "allow_cloud_model": request.allow_cloud_model,
         "language": request.language,
-        "repair_budget": request.repair_budget,
     }
-    if progress_callback is not None:
-        kwargs["progress_callback"] = progress_callback
-    return generation_service.generate(**kwargs)
+    clarifications = getattr(request, "clarifications", None)
+    if clarifications is not None:
+        kwargs["clarifications"] = [clarification.model_dump() for clarification in clarifications]
+    feedback_text = getattr(request, "feedback_text", None)
+    if feedback_text is not None:
+        kwargs["feedback_text"] = feedback_text
+    previous_candidate = getattr(request, "previous_candidate", None)
+    if previous_candidate is not None:
+        kwargs["previous_candidate"] = previous_candidate
+    assisted_repair_option_id = getattr(request, "assisted_repair_option_id", None)
+    if assisted_repair_option_id is not None:
+        kwargs["assisted_repair_option_id"] = assisted_repair_option_id
+    return kwargs
 
 
-def _runtime_options_payload(request: GenerateRequest) -> dict[str, int | float] | None:
+def _runtime_options_payload(request: GenerateRequest | PlanRequest) -> dict[str, int | float] | None:
     if request.runtime_options:
         return request.runtime_options.model_dump(exclude_none=True)
-    if normalize_mode(request.mode) == RELEASE_MODE:
-        return RuntimeOptions.release_defaults().to_ollama_options()
+    if not mode_allows_runtime_overrides(request.mode):
+        return default_runtime_options_for_mode(request.mode).to_ollama_options()
     return None

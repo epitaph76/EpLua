@@ -28,6 +28,28 @@ num_gpu=-1
 
 `num_gpu=-1` применяется только в release mode, чтобы не использовать CPU offload.
 
+### releaseSlim
+
+`releaseSlim` - дополнительный compact preset.
+
+Свойства:
+
+- cloud model tags запрещены;
+- `--allow-cloud-model` запрещён;
+- runtime options фиксированы компактно, как у release;
+- API запускает полный validation pipeline;
+- CPU offload не блокируется, потому что `num_gpu` не добавляется;
+- status-строка компактная: без `Params`.
+
+Параметры:
+
+```text
+num_ctx=4096
+num_predict=256
+batch=1
+parallel=1
+```
+
 ### Debug
 
 Debug mode нужен для разработки, анализа prompt package, model calls, validator reports и repair behavior.
@@ -69,6 +91,7 @@ Slash-команды:
 ```text
 /debug
 /release
+/release-slim
 /model <tag>
 /model n
 /allow-cloud on
@@ -76,12 +99,17 @@ Slash-команды:
 /repair-budget <number>
 /with-api
 /without-api
+/plan
+/feedback <text>
+/status
 /exit
 ```
 
 `/model n` возвращает стандартную модель.
 
 `/repair-budget 2` задаёт количество generator-pass попыток в API quality loop. По умолчанию используется `2`.
+
+`/plan` включает plan preflight только для следующего запроса и потом автоматически сбрасывается. В status-строке это отражается как `Plan: on` или `Plan: off`.
 
 ## Multiline input
 
@@ -112,7 +140,7 @@ CLI отправит задачу в API как один запрос.
 `with-api` - основной режим. Запрос идёт в `/generate` или `/generate/progress`, где работают:
 
 ```text
-planner -> prompter -> generator -> deterministic_validation -> optional repair_generation
+planner -> prompter -> generator -> deterministic_validation -> semantic_validation -> optional repair_generation
 ```
 
 `without-api` - прямой вызов Ollama для диагностики prompt/model behavior. Validation pipeline в этом режиме не запускается.
@@ -143,10 +171,11 @@ Debug progress:
   слой 3: prompter прошёл
   слой 4: generation прошёл
   слой 5: deterministic_validation прошёл
-  слой 6: response_ready прошёл
+  слой 6: semantic_validation прошёл
+  слой 7: response_ready прошёл
 ```
 
-В release mode используется минимальный индикатор ожидания и итоговый статус.
+В release mode используется минимальный индикатор ожидания и итоговый статус. В `releaseSlim` статус ещё компактнее и показывает только режим, язык, модель, `Plan` и `Repair budget`.
 
 ## Docker usage
 
