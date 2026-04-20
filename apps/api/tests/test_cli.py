@@ -475,7 +475,7 @@ def test_cli_chat_accepts_plain_text_task(monkeypatch, capsys) -> None:
     }
 
 
-def test_cli_chat_merges_multiline_json_paste_into_one_task(monkeypatch, capsys) -> None:
+def test_cli_chat_extracts_multiline_json_paste_into_provided_context(monkeypatch, capsys) -> None:
     http_client = RecordingHttpClient()
     monkeypatch.setattr(cli_main.httpx, "Client", lambda: http_client)
     commands = iter(
@@ -496,9 +496,10 @@ def test_cli_chat_merges_multiline_json_paste_into_one_task(monkeypatch, capsys)
 
     assert exit_code == 0
     capsys.readouterr()
-    assert http_client.posts[0]["json"]["task_text"] == "\n".join(
+    assert http_client.posts[0]["json"]["task_text"] == "Из полученного списка email получи последний."
+    assert http_client.posts[0]["json"]["provided_context"] == "\n".join(
         [
-            'Из полученного списка email получи последний. {',
+            "{",
             '  "wf": {',
             '    "vars": {',
             '      "emails": ["user1@example.com", "user2@example.com"]',
@@ -537,8 +538,18 @@ def test_cli_chat_paste_mode_sends_multiline_prompt_with_blank_line(monkeypatch,
 
     assert exit_code == 0
     capsys.readouterr()
-    assert http_client.posts[0]["json"]["task_text"] == "\n".join(pasted_lines)
-    assert http_client.posts[0]["json"]["provided_context"] is None
+    assert http_client.posts[0]["json"]["task_text"] == "Конвертируй время в переменной recallTime в unix-формат."
+    assert http_client.posts[0]["json"]["provided_context"] == "\n".join(
+        [
+            "{",
+            '  "wf": {',
+            '    "initVariables": {',
+            '      "recallTime": "2023-10-15T15:30:00+00:00"',
+            "    }",
+            "  }",
+            "}",
+        ]
+    )
 
 
 def test_cli_chat_keeps_inline_json_inside_task_text(monkeypatch, capsys) -> None:
@@ -1216,6 +1227,84 @@ def test_cli_chat_plan_one_shot_collects_structured_clarifications(monkeypatch, 
             "free_text": None,
         }
     ]
+
+
+def test_cli_chat_plan_extracts_multiline_json_context_before_plan_request(monkeypatch, capsys) -> None:
+    http_client = SequencedHttpClient(
+        [
+            {
+                "task_spec": {
+                    "task_text": "Из полученного списка email получи последний.",
+                    "language": "ru",
+                    "archetype": "simple_extraction",
+                    "operation": "last_array_item",
+                    "output_mode": "lowcode_json",
+                    "input_roots": ["wf.vars.emails"],
+                    "expected_shape": "scalar_or_nil",
+                    "risk_tags": ["array_indexing", "empty_array"],
+                    "edge_cases": ["single_item", "empty_array"],
+                    "clarification_required": False,
+                    "clarification_question": None,
+                    "clarification_questions": [],
+                },
+                "clarification_required": False,
+                "questions": [],
+                "trace": ["request_received", "clarifier", "planner", "response_ready"],
+            },
+            {
+                "code": '{"result":"lua{return wf.vars.emails[#wf.vars.emails]}lua"}',
+                "validation_status": "passed",
+                "trace": ["request_received", "response_ready"],
+            },
+        ]
+    )
+    monkeypatch.setattr(cli_main.httpx, "Client", lambda: http_client)
+    buffered_input = iter([True, False])
+    monkeypatch.setattr(cli_main, "_stdin_has_buffered_paste", lambda: next(buffered_input, False))
+    commands = iter(
+        [
+            "/plan",
+            "Из полученного списка email получи последний.",
+            "{",
+            '  "wf": {',
+            '    "vars": {',
+            '      "emails": [',
+            '        "user1@example.com",',
+            '        "user2@example.com",',
+            '        "user3@example.com"',
+            "      ]",
+            "    }",
+            "  }",
+            "}",
+            "/exit",
+        ]
+    )
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(commands))
+
+    exit_code = cli_main.main(["chat"])
+
+    assert exit_code == 0
+    capsys.readouterr()
+    assert http_client.posts[0]["url"] == "http://127.0.0.1:8011/plan"
+    assert http_client.posts[0]["json"]["task_text"] == "Из полученного списка email получи последний."
+    assert http_client.posts[0]["json"]["provided_context"] == "\n".join(
+        [
+            "{",
+            '  "wf": {',
+            '    "vars": {',
+            '      "emails": [',
+            '        "user1@example.com",',
+            '        "user2@example.com",',
+            '        "user3@example.com"',
+            "      ]",
+            "    }",
+            "  }",
+            "}",
+        ]
+    )
+    assert http_client.posts[1]["url"] == "http://127.0.0.1:8011/generate"
+    assert http_client.posts[1]["json"]["task_text"] == "Из полученного списка email получи последний."
+    assert http_client.posts[1]["json"]["provided_context"] == http_client.posts[0]["json"]["provided_context"]
 
 
 def test_cli_chat_reprints_status_after_parameter_changes(monkeypatch, capsys) -> None:

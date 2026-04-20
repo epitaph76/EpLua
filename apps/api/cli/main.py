@@ -222,7 +222,9 @@ def _read_chat_input(prompt: str) -> str:
         return line
 
     lines = [line]
-    while len(lines) < MAX_MULTILINE_PASTE_LINES and _needs_multiline_continuation("\n".join(lines)):
+    while len(lines) < MAX_MULTILINE_PASTE_LINES and (
+        _needs_multiline_continuation("\n".join(lines)) or _stdin_has_buffered_paste()
+    ):
         lines.append(input("...... "))
 
     merged_line = "\n".join(lines)
@@ -285,6 +287,21 @@ def _needs_multiline_continuation(text: str) -> bool:
     return in_string or bool(stack)
 
 
+def _stdin_has_buffered_paste() -> bool:
+    if not sys.stdin.isatty():
+        return False
+
+    try:
+        import msvcrt
+    except ModuleNotFoundError:
+        return False
+
+    try:
+        return bool(msvcrt.kbhit())
+    except OSError:
+        return False
+
+
 def _add_chat_history(line: str) -> None:
     if _CHAT_READLINE is None:
         return
@@ -333,6 +350,10 @@ def _handle_chat(args: argparse.Namespace) -> int:
 
         task_text = line
         raw_context = _read_context(state.get("context"))
+        if raw_context is None:
+            task_text, embedded_context = _split_multiline_task_and_context(task_text)
+            if embedded_context is not None:
+                raw_context = embedded_context
         input_roots = _explicit_input_roots(state)
         provided_context = _narrow_json_context(raw_context, input_roots)
         request_state = {
@@ -1444,6 +1465,28 @@ def _read_context(raw_context: str | None) -> str | None:
     except json.JSONDecodeError as exc:
         raise CliError("--context must be inline JSON or a path to a JSON file.") from exc
     return raw_context
+
+
+def _split_multiline_task_and_context(task_text: str) -> tuple[str, str | None]:
+    stripped = task_text.strip()
+    if "\n" not in stripped:
+        return stripped, None
+
+    for index, char in enumerate(stripped):
+        if char not in "{[":
+            continue
+        prefix = stripped[:index].rstrip()
+        suffix = stripped[index:].strip()
+        if not prefix or not suffix:
+            continue
+        try:
+            payload = json.loads(suffix)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, (dict, list)):
+            return prefix, suffix
+
+    return stripped, None
 
 
 def _explicit_input_roots(state: dict[str, Any]) -> list[str] | None:
